@@ -1,0 +1,10 @@
+.build/
+build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+DerivedData/
+.DS_Store
+docs/phase0-results/*.raw
+.dev/
+Claude outputs/
+*.sqlite
