@@ -22,6 +22,26 @@ final class AppModel {
     /// `~/.codex/config.toml` 中的預設模型（僅供顯示）。
     private(set) var configDefaultModel: String?
     var showAddModel = false
+    /// 翻譯目標語言與譯文字體（工具列、側欄、設定共用）。
+    private(set) var targetLanguage: TargetLanguage = Prefs.targetLanguage
+    private(set) var fontFamily: String = Prefs.fontFamily(for: Prefs.targetLanguage)
+
+    func setTargetLanguage(_ language: TargetLanguage) {
+        guard language != targetLanguage else { return }
+        Prefs.targetLanguage = language
+        targetLanguage = language
+        fontFamily = Prefs.fontFamily(for: language)
+        reader?.translation.settingsChanged()
+        reader?.translationSettingsChanged()
+    }
+
+    func setFontFamily(_ family: String) {
+        guard family != fontFamily else { return }
+        Prefs.setFontFamily(family, for: targetLanguage)
+        fontFamily = family
+        reader?.translation.settingsChanged()
+        reader?.translationSettingsChanged()
+    }
 
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
 
@@ -29,7 +49,7 @@ final class AppModel {
         do {
             database = try AppDatabase.openDefault()
         } catch {
-            alertMessage = "無法開啟資料庫：\(error.localizedDescription)\n閱讀功能仍可使用，但不會保存進度與譯文。"
+            alertMessage = L("無法開啟資料庫：", "Cannot open the database: ") + error.localizedDescription + L("\n閱讀功能仍可使用，但不會保存進度與譯文。", "\nReading still works, but progress and translations won’t be saved.")
         }
         refreshRecent()
 
@@ -53,7 +73,7 @@ final class AppModel {
         panel.allowedContentTypes = [.pdf]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "選擇要閱讀的 PDF"
+        panel.message = L("選擇要閱讀的 PDF", "Choose a PDF to read")
         if panel.runModal() == .OK, let url = panel.url {
             open(url: url)
         }
@@ -61,11 +81,11 @@ final class AppModel {
 
     func open(url: URL) {
         guard let pdf = PDFDocument(url: url) else {
-            alertMessage = "無法開啟「\(url.lastPathComponent)」，檔案可能不是有效的 PDF。"
+            alertMessage = L("無法開啟「\(url.lastPathComponent)」，檔案可能不是有效的 PDF。", "Can’t open “\(url.lastPathComponent)”. It may not be a valid PDF.")
             return
         }
         if pdf.isLocked && !pdf.unlock(withPassword: "") {
-            alertMessage = "「\(url.lastPathComponent)」有密碼保護，目前版本尚不支援。"
+            alertMessage = L("「\(url.lastPathComponent)」有密碼保護，目前版本尚不支援。", "“\(url.lastPathComponent)” is password protected, which isn’t supported yet.")
             return
         }
 
@@ -73,7 +93,7 @@ final class AppModel {
         do {
             fingerprint = try DocumentFingerprint.compute(url: url)
         } catch {
-            alertMessage = "無法讀取檔案：\(error.localizedDescription)"
+            alertMessage = L("無法讀取檔案：", "Can’t read the file: ") + error.localizedDescription
             return
         }
 
@@ -104,7 +124,7 @@ final class AppModel {
         if let url = resolveURL(for: record) {
             open(url: url)
         } else {
-            alertMessage = "找不到「\(record.title)」。檔案可能已被刪除或移到無法存取的位置。\n原路徑：\(record.path)"
+            alertMessage = L("找不到「\(record.title)」。檔案可能已被刪除或移到無法存取的位置。\n原路徑：", "Can’t find “\(record.title)”. It may have been deleted or moved somewhere inaccessible.\nOriginal path: ") + record.path
         }
     }
 
@@ -185,7 +205,7 @@ final class AppModel {
         do {
             let r = try await codex.translate(request)
             let secs = String(format: "%.1f", Date().timeIntervalSince(start))
-            return (true, "可用（\(secs) 秒）：\(r.translations.first?.translation ?? "")")
+            return (true, L("可用（\(secs) 秒）：", "Works (\(secs) s): ") + (r.translations.first?.translation ?? ""))
         } catch {
             return (false, error.localizedDescription)
         }
@@ -203,7 +223,7 @@ final class AppModel {
         do {
             let r = try await codex.translate(request)
             let secs = String(format: "%.1f", Date().timeIntervalSince(start))
-            modelTestResult = "✅ 可用（\(secs) 秒）：\(r.translations.first?.translation ?? "")"
+            modelTestResult = "✅ " + L("可用（\(secs) 秒）：", "Works (\(secs) s): ") + (r.translations.first?.translation ?? "")
         } catch {
             modelTestResult = "❌ \(error.localizedDescription)"
         }

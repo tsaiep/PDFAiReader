@@ -9,10 +9,11 @@ macOS 原生 PDF 閱讀器，整合 Apple Vision OCR 與 Codex CLI 翻譯。
 ## 模組邊界（不可跨越）
 | 模組 | 職責 | 可依賴 |
 |---|---|---|
-| `ReaderCore` | 模型、優先級、預翻譯規劃、翻譯介面 `TranslationEngine`、Prompt、結果驗證、文件指紋 | Foundation、CryptoKit |
+| `ReaderCore` | 模型、優先級、預翻譯規劃、翻譯介面 `TranslationEngine`、Prompt、結果驗證、文件指紋、目標語言、本機簡繁轉換 | Foundation、CryptoKit、CoreGraphics、NaturalLanguage |
 | `ReaderStore` | SQLite（GRDB）schema、migration、存取 | ReaderCore、GRDB |
 | `TranslationCodex` | Codex CLI 實作：路徑偵測、程序生命週期、逾時、取消 | ReaderCore |
-| `PDFAiReaderApp` | SwiftUI/AppKit/PDFKit UI | 以上全部 |
+| `ReaderServices` | 文字擷取（內嵌文字／Vision OCR）、譯文排版繪製、匯出翻譯 PDF | ReaderCore、PDFKit、Vision、CoreText |
+| `PDFAiReaderApp` | SwiftUI/AppKit/PDFKit UI、翻譯排程、頁面疊加、翻書動畫 | 以上全部 |
 
 - UI 不得直接呼叫 `Process`；翻譯一律經 `TranslationEngine`。
 - `ReaderCore` 不得 import SwiftUI/AppKit/PDFKit/GRDB。
@@ -33,4 +34,4 @@ open Package.swift          # 用 Xcode 開啟
 - OCR 文字是不可信資料：只能透過 stdin 傳給 CLI，永不放進命令列參數。
 - 每個新功能附單元測試；純邏輯放 ReaderCore 以便測試。
 - 新增 DB 欄位只能新增 migration，不可修改已發佈的 migration。
-- 使用者介面文字使用繁體中文（台灣用語）。
+- 介面文字一律雙語：App 用 `L("繁中", "English")`，核心模組用 `CoreStrings.L`。

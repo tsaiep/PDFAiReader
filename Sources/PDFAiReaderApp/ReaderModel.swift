@@ -36,9 +36,9 @@ enum PageTurnStyle: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .curl: return "翻書"
-        case .slide: return "滑動"
-        case .none: return "無動畫"
+        case .curl: return L("翻書", "Page curl")
+        case .slide: return L("滑動", "Slide")
+        case .none: return L("無動畫", "None")
         }
     }
 }
@@ -65,6 +65,10 @@ final class ReaderModel {
     /// 頁面上顯示譯文（false = 原文）。
     private(set) var showsTranslation: Bool
     private(set) var isPeekingOriginal = false
+    /// 雙頁模式：第一頁（封面）單獨顯示，之後兩兩成對。關閉時從第一頁開始成對。
+    private(set) var coverAlone = true
+    /// 目前畫面上的頁（縮圖列高亮用）。
+    private(set) var visiblePageIndicesForSidebar: Set<Int> = []
 
     var sidebarTab: SidebarTab = .thumbnails
     var showTranslationPanel: Bool {
@@ -85,8 +89,8 @@ final class ReaderModel {
     @ObservationIgnored private let renderCache = PageRenderCache()
     @ObservationIgnored let overlay: TranslationOverlayManager
     @ObservationIgnored private var turnHost: NSView?
-    @ObservationIgnored private var swipeAccumulated: CGFloat = 0
-    @ObservationIgnored private var swipeConsumed = false
+    @ObservationIgnored private let curl = PageCurlController()
+    @ObservationIgnored private var gesture = TurnGesture()
 
     init(document: PDFDocument, url: URL, record: DocumentRecord, progress: ReadingProgress?,
          bookmarks: [Bookmark], database: AppDatabase?, translation: TranslationCoordinator) {
@@ -108,6 +112,9 @@ final class ReaderModel {
                                                   "prerenderPages": true, "showTranslationOverlay": true])
         self.showTranslationPanel = UserDefaults.standard.bool(forKey: "showTranslationPanel")
         self.showsTranslation = UserDefaults.standard.bool(forKey: "showTranslationOverlay")
+        if let stored = try? database?.preference("twoUp.coverAlone", scope: record.id) {
+            self.coverAlone = stored != "0"
+        }
         translation.onTranslationsChanged = { [weak self] page in
             self?.overlay.translationsChanged(page: page)
         }
@@ -117,6 +124,19 @@ final class ReaderModel {
 
     func attach(_ view: PDFView) {
         pdfView = view
+        curl.view = view
+        curl.imageForPage = { [weak self, weak view] page in
+            guard let self, let view else { return nil }
+            let index = self.document.index(for: page)
+            return self.renderCache.image(page: page, index: index, longSide: self.renderLongSide(for: page, view: view),
+                                          overlays: self.overlayDrawings(index))
+        }
+        curl.isRTL = { [weak self] in self?.readingDirection == .rightToLeft }
+        curl.isSpread = { [weak self] in self?.displayMode == .twoUp }
+        curl.navigate = { [weak self, weak view] forward in
+            guard let self, let view else { return }
+            self.step(view, forward)
+        }
         overlay.attach(to: view)
         applyDisplayMode(to: view)
 
@@ -181,6 +201,7 @@ final class ReaderModel {
             if delay > 0 { try? await Task.sleep(for: .milliseconds(Int(delay * 1000))) }
             guard !Task.isCancelled, let self else { return }
             let visible = self.visiblePageIndices
+            if self.visiblePageIndicesForSidebar != visible { self.visiblePageIndicesForSidebar = visible }
             self.translation.visibleChanged(visible, direction: self.directionTracker.direction)
             self.overlay.refresh(around: visible)
             self.prepareTurnImages()
@@ -191,6 +212,16 @@ final class ReaderModel {
         guard let view = pdfView else { return [currentPageIndex] }
         let pages = view.visiblePages.map { document.index(for: $0) }
         return pages.isEmpty ? [currentPageIndex] : Set(pages)
+    }
+
+    /// 目標語言或字體改變：重新排版頁面上的譯文、重新準備翻頁影像。
+    func translationSettingsChanged() {
+        overlay.refresh(around: visiblePageIndices)
+        prepareTurnImages()
+    }
+
+    func pageLabel(_ index: Int) -> String {
+        document.page(at: index)?.label ?? "\(index + 1)"
     }
 
     // MARK: - 原文／譯文
@@ -234,31 +265,30 @@ final class ReaderModel {
         PageTurnStyle(rawValue: UserDefaults.standard.string(forKey: "pageTurnStyle") ?? "") ?? .curl
     }
 
+    /// 翻頁（鍵盤、按鈕、選單）。單頁／雙頁模式播放翻書或滑動動畫；連續模式平滑捲動。
     func turnPage(forward: Bool) {
         guard let view = pdfView else { return }
-        guard forward ? view.canGoToNextPage : view.canGoToPreviousPage else { return }
-        finishTurnAnimation()
         let style = turnStyle
-
         if displayMode == .continuous {
+            finishTurnAnimation()
+            guard forward ? view.canGoToNextPage : view.canGoToPreviousPage else { return }
             if style == .none || !animatedScroll(view: view, forward: forward) { step(view, forward) }
             return
         }
+        if style == .curl, curl.play(forward: forward) { return }
+        curl.finishImmediately()
+        guard forward ? view.canGoToNextPage : view.canGoToPreviousPage else { return }
+        finishTurnAnimation()
         guard style != .none else { step(view, forward); return }
 
+        // 滑動樣式（也是翻書無法使用時的替代，例如雙頁模式的封面）
         let host = PageTurnHostView(frame: view.bounds)
         host.autoresizingMask = [.width, .height]
         view.addSubview(host)
         turnHost = host
         let before = orderedVisiblePages(view).map { ($0, makePageLayer($0, view: view, host: host)) }
         step(view, forward)
-        view.layoutDocumentView()
-        let after = orderedVisiblePages(view)
-
-        switch style {
-        case .slide: animateSlide(host: host, before: before, forward: forward)
-        default: animateCurl(host: host, view: view, before: before, after: after, forward: forward)
-        }
+        animateSlide(host: host, before: before, forward: forward)
     }
 
     private func step(_ view: PDFView, _ forward: Bool) {
@@ -341,88 +371,6 @@ final class ReaderModel {
         CATransaction.commit()
     }
 
-    private func animateCurl(host: PageTurnHostView, view: PDFView, before: [(PDFPage, CALayer)],
-                             after: [PDFPage], forward: Bool) {
-        guard let root = host.layer, !before.isEmpty else { finishTurnAnimation(); return }
-        var perspective = CATransform3DIdentity
-        perspective.m34 = -1.0 / 1800
-        root.sublayerTransform = perspective
-
-        let rtl = readingDirection == .rightToLeft
-        // 翻動的紙張在畫面右側（往前讀、左至右）或左側
-        let turnsRightSheet = forward != rtl
-        let turning = turnsRightSheet ? before[before.count - 1] : before[0]
-        let isSpread = displayMode == .twoUp && before.count > 1
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for (page, layer) in before where page !== turning.0 { root.addSublayer(layer) }
-        let sheet = turning.1
-        let frame = sheet.frame
-        sheet.anchorPoint = CGPoint(x: turnsRightSheet ? 0 : 1, y: 0.5)
-        sheet.frame = frame
-        let shade = CALayer()
-        shade.frame = sheet.bounds
-        shade.backgroundColor = CGColor(gray: 0, alpha: 1)
-        shade.opacity = 0
-        sheet.addSublayer(shade)
-        root.addSublayer(sheet)
-        CATransaction.commit()
-
-        let firstHalf = isSpread ? 0.24 : 0.42
-        let endAngle: CGFloat = turnsRightSheet ? -.pi / 2 : .pi / 2
-
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak self, weak host] in
-            guard let self, let host else { return }
-            guard isSpread, let landingPage = turnsRightSheet ? after.first : after.last else {
-                host.removeFromSuperview()
-                if self.turnHost === host { self.turnHost = nil }
-                return
-            }
-            // 第二段：新跨頁的另一側頁面從書脊翻落
-            sheet.isHidden = true
-            let landing = self.makePageLayer(landingPage, view: view, host: host)
-            let lf = landing.frame
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            landing.anchorPoint = CGPoint(x: turnsRightSheet ? 1 : 0, y: 0.5)
-            landing.frame = lf
-            landing.transform = CATransform3DMakeRotation(turnsRightSheet ? .pi / 2 : -.pi / 2, 0, 1, 0)
-            root.addSublayer(landing)
-            CATransaction.commit()
-
-            CATransaction.begin()
-            CATransaction.setCompletionBlock { [weak self, weak host] in
-                host?.removeFromSuperview()
-                if self?.turnHost === host { self?.turnHost = nil }
-            }
-            let land = CABasicAnimation(keyPath: "transform")
-            land.fromValue = landing.transform
-            land.toValue = CATransform3DIdentity
-            land.duration = 0.24
-            land.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            landing.transform = CATransform3DIdentity
-            landing.add(land, forKey: "land")
-            CATransaction.commit()
-        }
-        let turn = CABasicAnimation(keyPath: "transform")
-        turn.fromValue = CATransform3DIdentity
-        turn.toValue = CATransform3DMakeRotation(endAngle, 0, 1, 0)
-        turn.duration = firstHalf
-        turn.timingFunction = CAMediaTimingFunction(name: isSpread ? .easeIn : .easeInEaseOut)
-        sheet.transform = CATransform3DMakeRotation(endAngle, 0, 1, 0)
-        sheet.add(turn, forKey: "turn")
-
-        let darken = CABasicAnimation(keyPath: "opacity")
-        darken.fromValue = 0
-        darken.toValue = 0.35
-        darken.duration = firstHalf
-        shade.opacity = 0.35
-        shade.add(darken, forKey: "shade")
-        CATransaction.commit()
-    }
-
     /// 連續捲動模式：平滑捲到上一頁／下一頁的頂端。
     private func animatedScroll(view: PDFView, forward: Bool) -> Bool {
         let target = min(max(currentPageIndex + (forward ? 1 : -1), 0), pageCount - 1)
@@ -463,50 +411,98 @@ final class ReaderModel {
 
     // MARK: - 鍵盤與觸控板
 
-    /// 單頁／雙頁模式下處理左右鍵、空白鍵、Page Up/Down；回傳是否已處理。
+    private var contentScrollsVertically: Bool {
+        guard let doc = pdfView?.documentView, let clip = doc.enclosingScrollView?.contentView else { return false }
+        return doc.bounds.height > clip.bounds.height + 4
+    }
+
+    private var contentScrollsHorizontally: Bool {
+        guard let doc = pdfView?.documentView, let clip = doc.enclosingScrollView?.contentView else { return false }
+        return doc.bounds.width > clip.bounds.width + 4
+    }
+
+    /// 鍵盤：C 切換原文／譯文；單頁／雙頁模式下 ← → ↑ ↓、空白鍵、Page Up/Down 一律左右翻書。
     func handleKey(_ event: NSEvent) -> Bool {
         let mods = event.modifierFlags.intersection([.command, .option, .control])
         guard mods.isEmpty else { return false }
+        if event.charactersIgnoringModifiers?.lowercased() == "c" {
+            toggleTranslation()
+            return true
+        }
         let rtl = readingDirection == .rightToLeft
         if displayMode == .continuous {
             switch event.keyCode {
             case 124: turnPage(forward: !rtl); return true
             case 123: turnPage(forward: rtl); return true
-            default: return false
+            default: return false   // ↑ ↓ 維持捲動
             }
         }
         switch event.keyCode {
-        case 124: turnPage(forward: !rtl); return true            // →
-        case 123: turnPage(forward: rtl); return true             // ←
-        case 121: turnPage(forward: true); return true            // Page Down
-        case 116: turnPage(forward: false); return true           // Page Up
-        case 49:                                                  // 空白鍵（Shift = 上一頁）
-            turnPage(forward: !event.modifierFlags.contains(.shift)); return true
+        case 124: turnPage(forward: !rtl); return true                        // →
+        case 123: turnPage(forward: rtl); return true                         // ←
+        case 125: if contentScrollsVertically { return false }; turnPage(forward: true); return true    // ↓
+        case 126: if contentScrollsVertically { return false }; turnPage(forward: false); return true   // ↑
+        case 121: turnPage(forward: true); return true                        // Page Down
+        case 116: turnPage(forward: false); return true                       // Page Up
+        case 49: turnPage(forward: !event.modifierFlags.contains(.shift)); return true   // 空白鍵
         default: return false
         }
     }
 
-    /// 觸控板左右滑動翻頁（單頁／雙頁模式，且頁面沒有放大到需要左右捲動時）。
+    /// 觸控板雙指滑動（上下左右）在單頁／雙頁模式一律左右翻書。
+    /// 翻書樣式下紙張跟著手指即時捲動，放開後依進度與速度完成或回彈。
+    /// 頁面放大到需要捲動的方向，交還給 PDFView 捲動。
     func handleScroll(_ event: NSEvent) -> Bool {
         guard displayMode != .continuous, event.hasPreciseScrollingDeltas else { return false }
         if event.phase == .began || event.phase == .mayBegin {
-            swipeAccumulated = 0
-            swipeConsumed = false
+            if gesture.interactive && curl.isActive { curl.end(velocity: 0) }
+            gesture = TurnGesture()
         }
-        if !event.momentumPhase.isEmpty { return swipeConsumed }
+        if !event.momentumPhase.isEmpty { return gesture.consumed }
+
         let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
-        if !swipeConsumed {
-            guard abs(dx) > abs(dy) * 1.3 || abs(swipeAccumulated) > 4 else { return false }
-            if let doc = pdfView?.documentView, let clip = doc.enclosingScrollView?.contentView,
-               doc.bounds.width > clip.bounds.width + 4 {
-                return false   // 放大中，左右捲動交給 PDFView
+        if gesture.axis == nil {
+            guard abs(dx) + abs(dy) > 0.5 else { return gesture.consumed }
+            let horizontal = abs(dx) >= abs(dy)
+            gesture.axis = horizontal ? .horizontal : .vertical
+            gesture.passThrough = horizontal ? contentScrollsHorizontally : contentScrollsVertically
+        }
+        if gesture.passThrough { return false }
+
+        let rtl = readingDirection == .rightToLeft
+        gesture.accumulated += gesture.axis == .horizontal ? dx : dy
+        // 自然捲動：手指往左（或往上）→ 數值為負 → 往後讀
+        let towardForward = (gesture.axis == .horizontal && rtl) ? gesture.accumulated : -gesture.accumulated
+
+        if gesture.forward == nil {
+            gesture.consumed = true
+            guard abs(towardForward) > 5 else { return true }
+            let forward = towardForward > 0
+            gesture.forward = forward
+            if turnStyle == .curl {
+                gesture.interactive = curl.begin(forward: forward)
+            }
+            if !gesture.interactive {
+                turnPage(forward: forward)
+                gesture.finished = true
             }
         }
-        swipeAccumulated += dx
-        if !swipeConsumed && abs(swipeAccumulated) > 36 {
-            swipeConsumed = true
-            let rtl = readingDirection == .rightToLeft
-            turnPage(forward: (swipeAccumulated < 0) != rtl)
+        guard gesture.interactive, !gesture.finished, let forward = gesture.forward else { return true }
+
+        let span = max(200, (gesture.axis == .horizontal ? (pdfView?.bounds.width ?? 800) * 0.5
+                                                        : (pdfView?.bounds.height ?? 800) * 0.4))
+        let progress = min(1, max(0, (forward ? towardForward : -towardForward) / span))
+        let now = event.timestamp
+        if let last = gesture.lastSample, now > last.time {
+            let instant = (progress - last.progress) / CGFloat(now - last.time)
+            gesture.velocity = gesture.velocity * 0.6 + instant * 0.4
+        }
+        gesture.lastSample = (now, progress)
+        curl.update(progress: progress)
+
+        if event.phase == .ended || event.phase == .cancelled {
+            curl.end(velocity: event.phase == .cancelled ? 0 : gesture.velocity)
+            gesture.finished = true
         }
         return true
     }
@@ -515,12 +511,26 @@ final class ReaderModel {
 
     func setDisplayMode(_ mode: DisplayMode) {
         finishTurnAnimation()
+        curl.finishImmediately()
         guard let view = pdfView else { displayMode = mode; return }
         let page = view.currentPage
         displayMode = mode
         applyDisplayMode(to: view)
         if let page { view.go(to: page) }
         scheduleSave()
+        scheduleVisibleUpdate(delay: 0.1)
+    }
+
+    /// 雙頁對頁調整：對頁錯位時切換「封面單獨顯示／從第一頁開始成對」，等於整體位移一頁。
+    func setCoverAlone(_ value: Bool) {
+        guard value != coverAlone else { return }
+        coverAlone = value
+        try? database?.setPreference("twoUp.coverAlone", value: value ? "1" : "0", scope: record.id)
+        guard let view = pdfView else { return }
+        curl.finishImmediately()
+        let page = view.currentPage
+        applyDisplayMode(to: view)
+        if let page { view.go(to: page) }
         scheduleVisibleUpdate(delay: 0.1)
     }
 
@@ -537,7 +547,7 @@ final class ReaderModel {
             view.displaysAsBook = false
         case .twoUp:
             view.displayMode = .twoUp
-            view.displaysAsBook = true
+            view.displaysAsBook = coverAlone
         case .continuous:
             view.displayMode = .singlePageContinuous
             view.displaysAsBook = false
@@ -592,7 +602,7 @@ final class ReaderModel {
             deleteBookmark(existing)
         } else {
             let label = document.page(at: currentPageIndex)?.label ?? "\(currentPageIndex + 1)"
-            let draft = Bookmark(documentID: record.id, pageIndex: currentPageIndex, title: "第 \(label) 頁")
+            let draft = Bookmark(documentID: record.id, pageIndex: currentPageIndex, title: L("第 \(label) 頁", "Page \(label)"))
             if let db = database, let saved = try? db.addBookmark(draft) {
                 bookmarks.append(saved)
             } else {
@@ -677,9 +687,24 @@ final class ReaderModel {
         saveProgressNow()
         clearHighlight()
         finishTurnAnimation()
+        curl.finishImmediately()
         overlay.removeAll()
         translation.shutdown()
     }
+}
+
+/// 觸控板翻頁手勢的狀態。
+struct TurnGesture {
+    enum Axis { case horizontal, vertical }
+    var axis: Axis?
+    var passThrough = false
+    var accumulated: CGFloat = 0
+    var forward: Bool?
+    var interactive = false
+    var consumed = false
+    var finished = false
+    var velocity: CGFloat = 0
+    var lastSample: (time: TimeInterval, progress: CGFloat)?
 }
 
 /// 翻頁動畫的承載層：不攔截滑鼠事件。
@@ -706,7 +731,7 @@ struct OutlineItem: Identifiable, Hashable {
             guard let child = node.child(at: i) else { return nil }
             let page = child.destination?.page.map { document.index(for: $0) }
             let sub = children(of: child, in: document, depth: depth + 1)
-            return OutlineItem(title: child.label ?? "（未命名）", pageIndex: page,
+            return OutlineItem(title: child.label ?? L("（未命名）", "(Untitled)"), pageIndex: page,
                                children: sub.isEmpty ? nil : sub)
         }
     }

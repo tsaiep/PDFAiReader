@@ -3,6 +3,7 @@ import AppKit
 import ReaderCore
 
 struct TranslationPanelView: View {
+    @Environment(AppModel.self) private var app
     let reader: ReaderModel
     @Bindable var coordinator: TranslationCoordinator
     @AppStorage("panelShowsOriginal") private var showsOriginal = false
@@ -28,7 +29,7 @@ struct TranslationPanelView: View {
                         PageSection(reader: reader, coordinator: coordinator, page: page, showsOriginal: showsOriginal)
                     }
                     if coordinator.focusPages.isEmpty {
-                        Text("翻到任一頁即可開始").foregroundStyle(.secondary)
+                        Text(L("翻到任一頁即可開始", "Turn to any page to begin")).foregroundStyle(.secondary)
                     }
                 }
                 .padding(14)
@@ -40,33 +41,42 @@ struct TranslationPanelView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("翻譯").font(.headline)
+            HStack(spacing: 6) {
+                Text(L("翻譯", "Translation")).font(.headline)
+                Image(systemName: "arrow.right").font(.caption).foregroundStyle(.secondary)
+                Menu {
+                    TargetLanguageItems()
+                } label: {
+                    Text(app.targetLanguage.menuName)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help(L("目標語言", "Target language"))
                 Spacer()
                 Picker("", selection: $showsOriginal) {
-                    Text("譯文").tag(false)
-                    Text("對照").tag(true)
+                    Text(L("譯文", "Text")).tag(false)
+                    Text(L("對照", "Side by Side")).tag(true)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 110)
+                .fixedSize()
             }
             HStack(spacing: 8) {
                 Button {
                     coordinator.translateFocusPages()
                 } label: {
-                    Label("翻譯此頁", systemImage: "character.book.closed")
+                    Label(L("翻譯此頁", "Translate Page"), systemImage: "character.book.closed")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .help("翻譯目前看到的頁面 (⌘T)")
 
                 Toggle(isOn: $coordinator.autoTranslate) {
-                    Text("自動翻譯＋\(coordinator.prefetchCount) 頁")
+                    Text(L("自動＋\(coordinator.prefetchCount) 頁", "Auto +\(coordinator.prefetchCount)"))
                 }
                 .toggleStyle(.switch)
                 .controlSize(.mini)
-                .help("閱讀時自動翻譯目前頁與後續頁面（頁數可在設定中調整）")
+                .help(L("閱讀時自動翻譯目前頁與後續頁面（頁數可在設定中調整）",
+                        "Translate the current and following pages while reading (count in Settings)"))
 
                 Spacer()
 
@@ -75,10 +85,12 @@ struct TranslationPanelView: View {
                     .fixedSize()
 
                 Menu {
-                    Button("整份翻譯…") { reader.activeSheet = .wholeTranslation }
-                    Button("匯出翻譯 PDF…") { reader.activeSheet = .export }
+                    FontMenu()
                     Divider()
-                    Button("重試失敗的頁面") { coordinator.retryFailed() }
+                    Button(L("整份翻譯…", "Translate Whole Document…")) { reader.activeSheet = .wholeTranslation }
+                    Button(L("匯出翻譯 PDF…", "Export Translated PDF…")) { reader.activeSheet = .export }
+                    Divider()
+                    Button(L("重試失敗的頁面", "Retry Failed Pages")) { coordinator.retryFailed() }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -105,18 +117,17 @@ private struct PageSection: View {
 
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
-                Text("第 \(page + 1) 頁").font(.subheadline.weight(.semibold))
+                Text(L("第 \(page + 1) 頁", "Page \(page + 1)")).font(.subheadline.weight(.semibold))
                 StatusBadge(status: status)
                 Spacer()
                 Menu {
-                    Button("翻譯此頁") { coordinator.translatePages([page]) }
-                    Button("重新翻譯此頁") { coordinator.retranslate(page) }
-                    Button("重新辨識文字（OCR）") { coordinator.reExtract(page) }
+                    Button(L("翻譯此頁", "Translate Page")) { coordinator.translatePages([page]) }
+                    Button(L("重新翻譯此頁", "Retranslate Page")) { coordinator.retranslate(page) }
+                    Button(L("重新辨識文字（OCR）", "Re-run Text Recognition (OCR)")) { coordinator.reExtract(page) }
                     Divider()
-                    Button("複製本頁譯文") {
+                    Button(L("複製本頁譯文", "Copy Page Translation")) {
                         let text = (blocks ?? []).compactMap { translations[$0.id] }.joined(separator: "\n\n")
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(text, forType: .string)
+                        copy(text)
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -127,29 +138,30 @@ private struct PageSection: View {
 
             if let blocks {
                 if blocks.isEmpty {
-                    Text("此頁沒有可辨識的文字").font(.callout).foregroundStyle(.secondary)
+                    Text(L("此頁沒有可辨識的文字", "No recognizable text on this page")).font(.callout).foregroundStyle(.secondary)
                 } else {
                     ForEach(blocks) { block in
                         BlockRow(block: block, translation: translations[block.id], showsOriginal: showsOriginal,
-                                 isTranslating: status == .translating)
+                                 isTranslating: status == .translating,
+                                 keepsOriginal: !coordinator.requiresTranslation(block))
                             .contentShape(Rectangle())
                             .onTapGesture { reader.highlight(rect: block.bounds.cgRect, pageIndex: block.pageIndex) }
                             .contextMenu {
                                 if let t = translations[block.id] {
-                                    Button("複製譯文") { copy(t) }
+                                    Button(L("複製譯文", "Copy Translation")) { copy(t) }
                                 }
-                                Button("複製原文") { copy(block.text) }
-                                Button("立即翻譯此段") { coordinator.translateBlockNow(block) }
-                                Button("在頁面上標示") {
+                                Button(L("複製原文", "Copy Original")) { copy(block.text) }
+                                Button(L("立即翻譯此段", "Translate This Paragraph Now")) { coordinator.translateBlockNow(block) }
+                                Button(L("在頁面上標示", "Show on Page")) {
                                     reader.highlight(rect: block.bounds.cgRect, pageIndex: block.pageIndex)
                                 }
                             }
                     }
                 }
             } else if status == .extracting {
-                HStack { ProgressView().controlSize(.small); Text("辨識文字中…").foregroundStyle(.secondary) }
+                HStack { ProgressView().controlSize(.small); Text(L("辨識文字中…", "Recognizing text…")).foregroundStyle(.secondary) }
             } else {
-                HStack { ProgressView().controlSize(.small); Text("準備中…").foregroundStyle(.secondary) }
+                HStack { ProgressView().controlSize(.small); Text(L("準備中…", "Preparing…")).foregroundStyle(.secondary) }
             }
 
             if case .failed(let message) = status {
@@ -157,7 +169,7 @@ private struct PageSection: View {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                     Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     Spacer()
-                    Button("重試") { coordinator.translatePages([page]) }.controlSize(.small)
+                    Button(L("重試", "Retry")) { coordinator.translatePages([page]) }.controlSize(.small)
                 }
             }
         }
@@ -174,22 +186,30 @@ private struct BlockRow: View {
     let translation: String?
     let showsOriginal: Bool
     let isTranslating: Bool
+    let keepsOriginal: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if showsOriginal || translation == nil {
+            if keepsOriginal {
                 Text(block.text)
-                    .font(originalFont)
-                    .foregroundStyle(translation == nil ? .secondary : .tertiary)
-                    .textSelection(.enabled)
-                    .opacity(translation == nil && isTranslating ? 0.6 : 1)
-            }
-            if let translation {
-                Text(translation)
                     .font(translationFont)
-                    .foregroundStyle(block.kind == .caption || block.kind == .footnote ? .secondary : .primary)
+                    .foregroundStyle(.primary)
                     .textSelection(.enabled)
-                    .lineSpacing(3)
+            } else {
+                if showsOriginal || translation == nil {
+                    Text(block.text)
+                        .font(originalFont)
+                        .foregroundStyle(translation == nil ? .secondary : .tertiary)
+                        .textSelection(.enabled)
+                        .opacity(translation == nil && isTranslating ? 0.6 : 1)
+                }
+                if let translation {
+                    Text(translation)
+                        .font(translationFont)
+                        .foregroundStyle(block.kind == .caption || block.kind == .footnote ? .secondary : .primary)
+                        .textSelection(.enabled)
+                        .lineSpacing(3)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -213,11 +233,11 @@ private struct StatusBadge: View {
     var body: some View {
         switch status {
         case .idle: EmptyView()
-        case .extracting: badge("辨識中", "text.viewfinder", .secondary, spinning: true)
-        case .queued: badge("排隊中", "clock", .secondary)
-        case .translating: badge("翻譯中", "character.book.closed", .blue, spinning: true)
-        case .done: badge("完成", "checkmark.circle.fill", .green)
-        case .failed: badge("失敗", "exclamationmark.triangle.fill", .orange)
+        case .extracting: badge(L("辨識中", "Recognizing"), "text.viewfinder", .secondary, spinning: true)
+        case .queued: badge(L("排隊中", "Queued"), "clock", .secondary)
+        case .translating: badge(L("翻譯中", "Translating"), "character.book.closed", .blue, spinning: true)
+        case .done: badge(L("完成", "Done"), "checkmark.circle.fill", .green)
+        case .failed: badge(L("失敗", "Failed"), "exclamationmark.triangle.fill", .orange)
         }
     }
 
@@ -241,12 +261,14 @@ private struct BlockedBanner: View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 4) {
-                Text("翻譯已暫停").font(.callout.weight(.semibold))
+                Text(L("翻譯已暫停", "Translation paused")).font(.callout.weight(.semibold))
                 Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(4)
-                Text("請確認 Codex 已登入、額度足夠，或到「設定 → 翻譯」檢查。").font(.caption).foregroundStyle(.secondary)
+                Text(L("請確認 Codex 已登入、額度足夠，或到「設定 → 翻譯」檢查。",
+                       "Check that Codex is logged in and has quota, or review Settings → Translation."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("繼續", action: retry).controlSize(.small)
+            Button(L("繼續", "Resume"), action: retry).controlSize(.small)
         }
         .padding(10)
         .background(Color.orange.opacity(0.1))
@@ -261,31 +283,35 @@ private struct WholeProgressView: View {
         if let whole = coordinator.whole {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text(coordinator.wholeIsFinished ? "整份翻譯完成" : (whole.isPaused ? "整份翻譯（已暫停）" : "整份翻譯中"))
+                    Text(coordinator.wholeIsFinished ? L("整份翻譯完成", "Whole document translated")
+                         : (whole.isPaused ? L("整份翻譯（已暫停）", "Whole document (paused)")
+                                           : L("整份翻譯中", "Translating whole document")))
                         .font(.callout.weight(.semibold))
                     Spacer()
-                    Text("第 \(whole.range.lowerBound + 1)–\(whole.range.upperBound + 1) 頁")
+                    Text(L("第 \(whole.range.lowerBound + 1)–\(whole.range.upperBound + 1) 頁",
+                           "Pages \(whole.range.lowerBound + 1)–\(whole.range.upperBound + 1)"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 ProgressView(value: Double(coordinator.wholeCompleted), total: Double(max(1, whole.range.count)))
                 HStack(spacing: 8) {
-                    Text("完成 \(coordinator.wholeCompleted)／\(whole.range.count) 頁"
-                         + (coordinator.wholeFailed > 0 ? "，失敗 \(coordinator.wholeFailed)" : ""))
+                    Text(L("完成 \(coordinator.wholeCompleted)／\(whole.range.count) 頁",
+                           "\(coordinator.wholeCompleted) of \(whole.range.count) pages")
+                         + (coordinator.wholeFailed > 0 ? L("，失敗 \(coordinator.wholeFailed)", ", \(coordinator.wholeFailed) failed") : ""))
                         .font(.caption).monospacedDigit().foregroundStyle(.secondary)
                     Spacer()
                     if coordinator.wholeIsFinished {
-                        Button("匯出 PDF…") { reader.activeSheet = .export }.controlSize(.small)
-                        Button("關閉") { coordinator.cancelWhole() }.controlSize(.small)
+                        Button(L("匯出 PDF…", "Export PDF…")) { reader.activeSheet = .export }.controlSize(.small)
+                        Button(L("關閉", "Close")) { coordinator.cancelWhole() }.controlSize(.small)
                     } else {
                         if coordinator.wholeFailed > 0 {
-                            Button("重試失敗") { coordinator.retryFailed() }.controlSize(.small)
+                            Button(L("重試失敗", "Retry Failed")) { coordinator.retryFailed() }.controlSize(.small)
                         }
                         if whole.isPaused {
-                            Button("繼續") { coordinator.resumeWhole() }.controlSize(.small)
+                            Button(L("繼續", "Resume")) { coordinator.resumeWhole() }.controlSize(.small)
                         } else {
-                            Button("暫停") { coordinator.pauseWhole() }.controlSize(.small)
+                            Button(L("暫停", "Pause")) { coordinator.pauseWhole() }.controlSize(.small)
                         }
-                        Button("取消") { coordinator.cancelWhole() }.controlSize(.small)
+                        Button(L("取消", "Cancel")) { coordinator.cancelWhole() }.controlSize(.small)
                     }
                 }
             }
@@ -301,18 +327,18 @@ private struct SelectionCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("選取文字").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(L("選取文字", "Selection")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
                 if let t = selection.translation {
                     Button { copy(t) } label: { Image(systemName: "doc.on.doc") }
-                        .buttonStyle(.borderless).help("複製譯文")
+                        .buttonStyle(.borderless).help(L("複製譯文", "Copy translation"))
                 }
                 Button(action: onClose) { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
             }
             Text(selection.original).font(.callout).foregroundStyle(.secondary).lineLimit(6).textSelection(.enabled)
             if selection.isLoading {
-                HStack { ProgressView().controlSize(.small); Text("翻譯中…").foregroundStyle(.secondary) }
+                HStack { ProgressView().controlSize(.small); Text(L("翻譯中…", "Translating…")).foregroundStyle(.secondary) }
             } else if let t = selection.translation {
                 Text(t).textSelection(.enabled)
             } else if let e = selection.error {

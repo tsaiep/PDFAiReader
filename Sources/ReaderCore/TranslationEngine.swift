@@ -112,10 +112,10 @@ public enum EngineAvailability: Sendable, Equatable {
 
     public var description: String {
         switch self {
-        case .available(let v): return "可用（\(v)）"
-        case .notInstalled: return "找不到 Codex CLI"
-        case .notLoggedIn(let d): return "尚未登入：\(d)"
-        case .error(let e): return "錯誤：\(e)"
+        case .available(let v): return CoreStrings.L("可用（\(v)）", "Available (\(v))")
+        case .notInstalled: return CoreStrings.L("找不到 Codex CLI", "Codex CLI not found")
+        case .notLoggedIn(let d): return CoreStrings.L("尚未登入：\(d)", "Not logged in: \(d)")
+        case .error(let e): return CoreStrings.L("錯誤：\(e)", "Error: \(e)")
         }
     }
 }

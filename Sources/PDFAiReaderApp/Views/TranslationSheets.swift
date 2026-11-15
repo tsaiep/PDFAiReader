@@ -28,23 +28,23 @@ struct WholeTranslationSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("整份翻譯").font(.title2.weight(.semibold))
-            Text("在背景依序辨識並翻譯頁面。閱讀中的頁面永遠優先；可隨時暫停，關閉程式後可從未完成的頁面繼續。")
+            Text(L("整份翻譯", "Translate Whole Document")).font(.title2.weight(.semibold))
+            Text(L("在背景依序辨識並翻譯頁面。閱讀中的頁面永遠優先；可隨時暫停，關閉程式後可從未完成的頁面繼續。", "Pages are recognized and translated in the background. The pages you are reading always come first; you can pause any time and resume after relaunching."))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Form {
-                Picker("範圍", selection: $useRange) {
-                    Text("全部 \(reader.pageCount) 頁").tag(false)
-                    Text("指定頁碼").tag(true)
+                Picker(L("範圍", "Range"), selection: $useRange) {
+                    Text(L("全部 \(reader.pageCount) 頁", "All \(reader.pageCount) pages")).tag(false)
+                    Text(L("指定頁碼", "Page range")).tag(true)
                 }
                 .pickerStyle(.radioGroup)
                 if useRange {
                     HStack {
-                        TextField("從", text: $fromText).frame(width: 70)
-                        Text("到")
-                        TextField("到", text: $toText).frame(width: 70)
-                        Text("頁")
+                        TextField(L("從", "From"), text: $fromText).frame(width: 70)
+                        Text(L("到", "to"))
+                        TextField(L("到", "To"), text: $toText).frame(width: 70)
+                        Text(L("頁", ""))
                     }
                 }
             }
@@ -52,14 +52,14 @@ struct WholeTranslationSheet: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 4) {
                     if let range {
-                        Text("範圍內共 \(range.count) 頁，已完成 \(range.count - remaining) 頁，需翻譯 \(remaining) 頁")
+                        Text(L("範圍內共 \(range.count) 頁，已完成 \(range.count - remaining) 頁，需翻譯 \(remaining) 頁", "\(range.count) pages in range, \(range.count - remaining) done, \(remaining) to translate"))
                         let calls = Int((Double(remaining) / 2.5).rounded(.up))
-                        Text("預估約 \(calls) 次 Codex 呼叫，每次約 12–20 秒（實際依頁面字數而定）")
+                        Text(L("預估約 \(calls) 次 Codex 呼叫，每次約 12–20 秒（實際依頁面字數而定）", "About \(calls) Codex calls, roughly 12–20 seconds each (depends on page length)"))
                             .foregroundStyle(.secondary)
-                        Text("每次呼叫約消耗 1.7 萬 tokens 以上，請留意 Codex 額度。額度用盡時會自動暫停並保留進度。")
+                        Text(L("每次呼叫約消耗 1.7 萬 tokens 以上，請留意 Codex 額度。額度用盡時會自動暫停並保留進度。簡繁轉換在本機完成，不消耗額度。", "Each call uses 17k+ tokens; watch your Codex quota. Translation pauses automatically when quota runs out. Simplified/Traditional Chinese conversion runs locally and uses no quota."))
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("請輸入有效的頁碼範圍").foregroundStyle(.orange)
+                        Text(L("請輸入有效的頁碼範圍", "Enter a valid page range")).foregroundStyle(.orange)
                     }
                 }
                 .font(.callout)
@@ -68,8 +68,8 @@ struct WholeTranslationSheet: View {
 
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("開始翻譯") {
+                Button(L("取消", "Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(L("開始翻譯", "Start")) {
                     if let range { coordinator.startWhole(range: range) }
                     reader.showTranslationPanel = true
                     dismiss()
@@ -103,9 +103,9 @@ struct ExportSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("匯出翻譯 PDF").font(.title2.weight(.semibold))
+            Text(L("匯出翻譯 PDF", "Export Translated PDF")).font(.title2.weight(.semibold))
 
-            Picker("版面", selection: $modeRaw) {
+            Picker(L("版面", "Layout"), selection: $modeRaw) {
                 ForEach(ExportMode.allCases) { m in Text(m.label).tag(m.rawValue) }
             }
             .pickerStyle(.radioGroup)
@@ -114,17 +114,17 @@ struct ExportSheet: View {
             let translated = coordinator.completedPages.count
             GroupBox {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("已翻譯 \(translated)／\(reader.pageCount) 頁")
+                    Text(L("已翻譯 \(translated)／\(reader.pageCount) 頁", "\(translated) of \(reader.pageCount) pages translated"))
                     if translated < reader.pageCount {
                         Text(mode == .inPlace || mode == .interleaved
-                             ? "未翻譯的頁面會保留原文。"
-                             : "純譯文模式只會輸出已翻譯的頁面。")
+                             ? L("未翻譯的頁面會保留原文。", "Untranslated pages keep the original text.")
+                             : L("純譯文模式只會輸出已翻譯的頁面。", "Translation-only mode includes translated pages only."))
                             .foregroundStyle(.secondary)
-                        Button("先整份翻譯剩下的頁面…") { reader.activeSheet = .wholeTranslation }
+                        Button(L("先整份翻譯剩下的頁面…", "Translate Remaining Pages First…")) { reader.activeSheet = .wholeTranslation }
                             .disabled(isExporting)
                     }
                     if mode == .inPlace {
-                        Text("原位翻譯會以紙色覆蓋原文區塊再填入譯文，圖片與版面維持原樣；字級依區塊大小自動調整。")
+                        Text(L("原位翻譯會以紙色覆蓋原文區塊再填入譯文，圖片與版面維持原樣；字級依區塊大小自動調整，字體使用目前的譯文字體。", "In-place mode covers the original text with the paper color and fills in the translation, keeping images and layout. Font size adapts to each block; the current translation font is used."))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -133,15 +133,15 @@ struct ExportSheet: View {
             }
 
             if isExporting {
-                ProgressView(value: progress) { Text("匯出中…") }
+                ProgressView(value: progress) { Text(L("匯出中…", "Exporting…")) }
             }
             if let resultURL {
                 HStack {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                    Text("已匯出：\(resultURL.lastPathComponent)").lineLimit(1).truncationMode(.middle)
+                    Text(L("已匯出：", "Exported: ") + resultURL.lastPathComponent).lineLimit(1).truncationMode(.middle)
                     Spacer()
-                    Button("在 Finder 中顯示") { NSWorkspace.shared.activateFileViewerSelecting([resultURL]) }
-                    Button("開啟") { NSWorkspace.shared.open(resultURL) }
+                    Button(L("在 Finder 中顯示", "Show in Finder")) { NSWorkspace.shared.activateFileViewerSelecting([resultURL]) }
+                    Button(L("開啟", "Open")) { NSWorkspace.shared.open(resultURL) }
                 }
             }
             if let errorMessage {
@@ -151,10 +151,10 @@ struct ExportSheet: View {
             HStack {
                 Spacer()
                 if isExporting {
-                    Button("取消匯出") { cancelFlag.cancel() }
+                    Button(L("取消匯出", "Cancel Export")) { cancelFlag.cancel() }
                 } else {
-                    Button(resultURL == nil ? "取消" : "完成") { dismiss() }.keyboardShortcut(.cancelAction)
-                    Button("匯出…") { chooseDestinationAndExport() }
+                    Button(resultURL == nil ? L("取消", "Cancel") : L("完成", "Done")) { dismiss() }.keyboardShortcut(.cancelAction)
+                    Button(L("匯出…", "Export…")) { chooseDestinationAndExport() }
                         .keyboardShortcut(.defaultAction)
                         .disabled(translated == 0)
                 }
@@ -170,15 +170,15 @@ struct ExportSheet: View {
         panel.canCreateDirectories = true
         let suffix: String
         switch mode {
-        case .inPlace: suffix = "中譯"
-        case .interleaved: suffix = "中英對照"
-        case .translationOnly: suffix = "譯文"
+        case .inPlace: suffix = L("譯文版", "translated")
+        case .interleaved: suffix = L("對照", "bilingual")
+        case .translationOnly: suffix = L("純譯文", "translation only")
         }
-        panel.nameFieldStringValue = "\(reader.record.title)（\(suffix)）.pdf"
+        panel.nameFieldStringValue = "\(reader.record.title) (\(suffix)).pdf"
         panel.directoryURL = reader.url.deletingLastPathComponent()
         guard panel.runModal() == .OK, let dest = panel.url else { return }
         guard dest.standardizedFileURL != reader.url.standardizedFileURL else {
-            errorMessage = "不能覆蓋原始 PDF，請選擇其他檔名。"
+            errorMessage = L("不能覆蓋原始 PDF，請選擇其他檔名。", "You can’t overwrite the original PDF. Choose another name.")
             return
         }
 
@@ -188,6 +188,7 @@ struct ExportSheet: View {
         let docID = coordinator.documentID
         let key = coordinator.cacheKey
         let range = 0...(reader.pageCount - 1)
+        let fontFamily = coordinator.fontFamily
         let flag = CancelFlag()
         cancelFlag = flag
         isExporting = true
@@ -201,6 +202,7 @@ struct ExportSheet: View {
                 return Result {
                     try TranslatedPDFExporter.export(
                         source: source, destination: dest, mode: mode, pageRange: range, blocksByPage: blocks,
+                        fontFamily: fontFamily,
                         progress: { done, total in
                             Task { @MainActor in progress = Double(done) / Double(max(1, total)) }
                         },

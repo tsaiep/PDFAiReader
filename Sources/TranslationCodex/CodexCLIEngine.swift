@@ -33,12 +33,12 @@ public enum CodexError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .notInstalled: return "找不到 Codex CLI，請安裝或在設定中指定路徑。"
-        case .nonZeroExit(let code, let tail): return "Codex 結束碼 \(code)：\(tail)"
-        case .timedOut: return "Codex 執行逾時。"
-        case .cancelled: return "已取消。"
-        case .missingOutput: return "Codex 沒有產生輸出。"
-        case .invalidOutput(let s): return "Codex 輸出格式錯誤：\(s)"
+        case .notInstalled: return CoreStrings.L("找不到 Codex CLI，請安裝或在設定中指定路徑。", "Codex CLI not found. Install it or set its path in Settings.")
+        case .nonZeroExit(let code, let tail): return CoreStrings.L("Codex 結束碼 \(code)：\(tail)", "Codex exited with code \(code): \(tail)")
+        case .timedOut: return CoreStrings.L("Codex 執行逾時。", "Codex timed out.")
+        case .cancelled: return CoreStrings.L("已取消。", "Cancelled.")
+        case .missingOutput: return CoreStrings.L("Codex 沒有產生輸出。", "Codex produced no output.")
+        case .invalidOutput(let s): return CoreStrings.L("Codex 輸出格式錯誤：\(s)", "Unexpected Codex output: \(s)")
         }
     }
 }

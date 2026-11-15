@@ -77,8 +77,8 @@ public enum TranslationDecodeError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .notUTF8: return "輸出不是 UTF-8"
-        case .invalidJSON(let s): return "輸出不是合法 JSON：\(s)"
+        case .notUTF8: return CoreStrings.L("輸出不是 UTF-8", "Output is not UTF-8")
+        case .invalidJSON(let s): return CoreStrings.L("輸出不是合法 JSON：\(s)", "Output is not valid JSON: \(s)")
         }
     }
 }

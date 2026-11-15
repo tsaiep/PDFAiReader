@@ -21,9 +21,9 @@ public enum TextExtractionError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .cannotOpenDocument: return "無法開啟文件進行文字辨識"
-        case .pageOutOfRange(let i): return "頁碼超出範圍：\(i + 1)"
-        case .renderFailed: return "頁面渲染失敗"
+        case .cannotOpenDocument: return CoreStrings.L("無法開啟文件進行文字辨識", "Cannot open the document for text recognition")
+        case .pageOutOfRange(let i): return CoreStrings.L("頁碼超出範圍：\(i + 1)", "Page out of range: \(i + 1)")
+        case .renderFailed: return CoreStrings.L("頁面渲染失敗", "Failed to render page")
         }
     }
 }

@@ -13,10 +13,10 @@ struct ModelMenu: View {
         Menu {
             ModelMenuItems(reader: reader)
         } label: {
-            Label(model.isEmpty ? "預設模型" : model, systemImage: "cpu")
+            Label(model.isEmpty ? L("預設模型", "Default Model") : model, systemImage: "cpu")
                 .labelStyle(.titleAndIcon)
         }
-        .help("選擇翻譯模型與速度／品質")
+        .help(L("選擇翻譯模型與速度／品質", "Choose the translation model and speed/quality"))
     }
 }
 
@@ -33,20 +33,20 @@ struct ModelMenuItems: View {
     }
 
     var body: some View {
-        Section("翻譯模型") {
+        Section(L("翻譯模型", "Model")) {
             Toggle(isOn: Binding(get: { model.isEmpty }, set: { if $0 { select("") } })) {
-                Text("預設（\(app.configDefaultModel ?? "Codex 設定檔")）")
+                Text(L("預設", "Default") + "（\(app.configDefaultModel ?? L("Codex 設定檔", "Codex config"))）")
             }
             ForEach(customModels, id: \.self) { m in
                 Toggle(m, isOn: Binding(get: { model == m }, set: { if $0 { select(m) } }))
             }
-            Button("新增其他模型…") { app.showAddModel = true }
+            Button(L("新增其他模型…", "Add Another Model…")) { app.showAddModel = true }
         }
-        Section("速度／品質") {
-            Picker("推理強度", selection: Binding(get: { effort }, set: { setEffort($0) })) {
-                Text("快速（low）").tag("low")
-                Text("標準（medium）").tag("medium")
-                Text("精細（high，較慢）").tag("high")
+        Section(L("速度／品質", "Speed / Quality")) {
+            Picker(L("推理強度", "Reasoning effort"), selection: Binding(get: { effort }, set: { setEffort($0) })) {
+                Text(L("快速（low）", "Fast (low)")).tag("low")
+                Text(L("標準（medium）", "Standard (medium)")).tag("medium")
+                Text(L("精細（high，較慢）", "Thorough (high, slower)")).tag("high")
             }
             .pickerStyle(.inline)
             .labelsHidden()
@@ -77,15 +77,15 @@ struct AddModelSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("新增翻譯模型").font(.title2.weight(.semibold))
-            Text("Codex CLI 無法列出可用模型，請輸入模型 ID（與 `codex -m` 使用的名稱相同），按「測試」實際翻譯一句確認可用。")
+            Text(L("新增翻譯模型", "Add Translation Model")).font(.title2.weight(.semibold))
+            Text(L("Codex CLI 無法列出可用模型，請輸入模型 ID（與 `codex -m` 使用的名稱相同），按「測試」實際翻譯一句確認可用。", "Codex CLI can’t list models. Enter a model ID (the same name you’d pass to `codex -m`) and press Test to translate one sentence."))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField("模型 ID", text: $candidate)
+            TextField(L("模型 ID", "Model ID"), text: $candidate)
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: candidate) { _, _ in passed = false; result = nil }
             HStack {
-                Button("測試") {
+                Button(L("測試", "Test")) {
                     testing = true
                     Task {
                         let r = await app.testModel(candidate.trimmingCharacters(in: .whitespaces))
@@ -103,8 +103,8 @@ struct AddModelSheet: View {
             }
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("加入並使用") {
+                Button(L("取消", "Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(L("加入並使用", "Add and Use")) {
                     let m = candidate.trimmingCharacters(in: .whitespaces)
                     var list = customModelsRaw.split(separator: "\n").map(String.init)
                     if !list.contains(m) { list.append(m) }

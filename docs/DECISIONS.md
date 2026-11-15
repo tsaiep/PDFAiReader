@@ -78,3 +78,15 @@ OCR → 版面分析 → 翻譯 為同一條有依賴關係的管線，OCR 也�
   不影響結果，但增加啟動時間與錯誤 log。後續研究以獨立 profile 隔離。
 - 預設引擎參數：`--ephemeral`、`-c model_reasoning_effort="low"`。
 - 待使用者確認：用量頁面上的額度消耗、使用條款。
+
+## v0.4 決策（2026-11-16）
+- **頁面譯文疊加**：PDFView 文件視圖中每頁一層透明 NSView。PDFAnnotation 自訂繪製與 PDFPage 子類別
+  `draw(with:to:)` 都不會被 PDFView 呼叫；PDFPage Swift 子類別有儲存屬性時會因 ObjC 初始化而崩潰。
+- **翻書**：`CIPageCurlWithShadowTransition`，半徑 = 紙寬 × 0.22（較軟）、角度傾斜 0.18 rad（下角先翻起）。
+  手勢驅動進度，放開時依進度與速度（每秒進度）決定完成或回彈；每格約 11 ms。
+  往回翻以「上一頁為正面、時間反向」呈現攤平效果。雙頁模式翻動的是閱讀方向前方那張，另一側在後半段淡入。
+- **簡繁轉換**：ICU `Hans-Hant`／`Hant-Hans` 只轉字形，再套用保守的台灣用語表；不送 AI。
+  已是目標語言（NaturalLanguage 判斷，信心 > 0.85）的段落保留原文、不算缺譯。
+- **Prompt v2**：英文指令＋目標語言參數。譯文查詢不再依 Prompt 版本過濾（舊譯文持續顯示，重新翻譯才用新版）。
+- **快取鍵**：譯文與頁面完成狀態依目標語言區分；本機轉換以 engine = local 記錄。
+- **介面語言**：`L(zh, en)` 雙語字串＋@Observable 的 UILanguageStore，切換即時生效；核心模組錯誤訊息用 CoreStrings。

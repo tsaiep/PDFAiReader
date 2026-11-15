@@ -62,10 +62,20 @@ final class TranslationCoordinator {
     }
 
     /// 實際寫入譯文時記錄的引擎與模型。
-    var cacheKey: TranslationCacheKey { TranslationCacheKey(engine: engine.engineID, model: model) }
+    /// 目標語言（設定 → 翻譯）。
+    var targetLanguage: TargetLanguage { Prefs.targetLanguage }
+
+    /// 譯文字體。
+    var fontFamily: String { Prefs.fontFamily(for: targetLanguage) }
+
+    var cacheKey: TranslationCacheKey {
+        TranslationCacheKey(engine: engine.engineID, model: model, targetLanguage: targetLanguage.rawValue)
+    }
 
     /// 頁面完成狀態不分模型：換模型後已翻好的頁面維持完成，只有新頁面或「重新翻譯」才用新模型。
-    var statusKey: TranslationCacheKey { TranslationCacheKey(engine: "any", model: "any") }
+    var statusKey: TranslationCacheKey {
+        TranslationCacheKey(engine: "any", model: "any", targetLanguage: targetLanguage.rawValue)
+    }
 
     /// 某頁的譯文有變動時通知（頁面疊加層據此重繪）。
     @ObservationIgnored var onTranslationsChanged: ((Int) -> Void)?
@@ -105,7 +115,7 @@ final class TranslationCoordinator {
         let states = (try? db.pageTranslationStates(documentID: documentID, key: statusKey)) ?? [:]
         completedPages = Set(states.values.filter { $0.state == .done }.map(\.pageIndex))
         for (i, s) in states {
-            status[i] = s.state == .done ? .done : .failed(s.errorMessage ?? "翻譯失敗")
+            status[i] = s.state == .done ? .done : .failed(s.errorMessage ?? L("翻譯失敗", "Translation failed"))
         }
         if let active = try? db.preference("whole.active", scope: documentID), active == "1",
            let rangeText = try? db.preference("whole.range", scope: documentID),
@@ -132,11 +142,43 @@ final class TranslationCoordinator {
         return max(0, parts[0])...min(pageCount - 1, parts[1])
     }
 
-    /// 設定（模型）改變後重新載入完成狀態。
+    /// 設定（模型、目標語言、字體）改變後重新載入：譯文與完成狀態都依目標語言區分。
     func settingsChanged() {
-        status = status.filter { $0.value.isBusy }
+        let languageChanged = loadedLanguage != targetLanguage
+        loadedLanguage = targetLanguage
+        if languageChanged {
+            translations.removeAll()
+            localDecisions.removeAll()
+            completedPages.removeAll()
+            queue.removeAll()
+            status = status.filter { $0.value == .extracting }
+        } else {
+            status = status.filter { $0.value.isBusy }
+        }
         loadPersistedState()
-        for p in focusPages { loadCached(p) }
+        for p in focusPages {
+            loadCached(p)
+            onTranslationsChanged?(p)
+        }
+        if languageChanged { refreshPrefetch() }
+    }
+
+    // MARK: - 本機處理（簡繁轉換、已是目標語言）
+
+    @ObservationIgnored private var localDecisions: [String: LocalTranslation] = [:]
+    @ObservationIgnored private var loadedLanguage: TargetLanguage = Prefs.targetLanguage
+
+    private func localDecision(_ block: TextBlock) -> LocalTranslation {
+        if let d = localDecisions[block.id] { return d }
+        let d = LocalTranslation.decide(text: block.text, target: targetLanguage)
+        localDecisions[block.id] = d
+        return d
+    }
+
+    /// 這個區塊需要有譯文才算完成（排除頁碼、已是目標語言的段落）。
+    func requiresTranslation(_ block: TextBlock) -> Bool {
+        guard block.needsTranslation else { return false }
+        return localDecision(block) != .keepOriginal
     }
 
     // MARK: - 閱讀位置
@@ -183,8 +225,7 @@ final class TranslationCoordinator {
         }
         if translations[page] == nil {
             translations[page] = (try? db.latestTranslations(documentID: documentID, pageIndex: page,
-                                                            targetLanguage: cacheKey.targetLanguage,
-                                                            promptVersion: cacheKey.promptVersion)) ?? [:]
+                                                            targetLanguage: targetLanguage.rawValue)) ?? [:]
         }
     }
 
@@ -222,7 +263,7 @@ final class TranslationCoordinator {
             if status[page] == .extracting { status[page] = (previous == .extracting ? .idle : previous) ?? .idle }
             return result
         } catch {
-            status[page] = .failed("文字辨識失敗：\(error.localizedDescription)")
+            status[page] = .failed(L("文字辨識失敗：", "Text recognition failed: ") + error.localizedDescription)
             throw error
         }
     }
@@ -342,7 +383,8 @@ final class TranslationCoordinator {
     private func pendingCharacters(_ page: Int) -> Int {
         guard let b = blocks[page] else { return Int.max / 4 }
         let done = translations[page] ?? [:]
-        return b.filter { $0.needsTranslation && done[$0.id] == nil }.map(\.text.count).reduce(0, +)
+        return b.filter { requiresTranslation($0) && done[$0.id] == nil && localDecision($0) == .useEngine }
+            .map(\.text.count).reduce(0, +)
     }
 
     private func process(first: Int) async {
@@ -354,7 +396,7 @@ final class TranslationCoordinator {
             }
         } catch {
             queue.removeValue(forKey: first)
-            markFailed([first], "文字辨識失敗：\(error.localizedDescription)")
+            markFailed([first], L("文字辨識失敗：", "Text recognition failed: ") + error.localizedDescription)
             return
         }
         guard queue[first] != nil else { return }   // 等待期間被移出佇列
@@ -368,16 +410,30 @@ final class TranslationCoordinator {
         currentBatch = pages
         defer { currentBatch = [] }
 
-        // 2. 組成請求（略過已有有效譯文的區塊）
+        // 2. 組成請求（略過已有有效譯文的區塊；簡繁轉換在本機完成，不送給 AI）
         var segments: [TranslationSegment] = []
         var blockByID: [String: TextBlock] = [:]
+        var localItems: [(TextBlock, String)] = []
         for p in pages {
             // 重新翻譯時保留舊譯文顯示，直到新譯文回來
             let existing = forceRetranslate.contains(p) ? [:] : (translations[p] ?? [:])
-            for b in blocks[p] ?? [] where b.needsTranslation && existing[b.id] == nil {
-                segments.append(TranslationSegment(id: b.id, kind: b.kind, text: b.text))
-                blockByID[b.id] = b
+            for b in blocks[p] ?? [] where requiresTranslation(b) && existing[b.id] == nil {
+                switch localDecision(b) {
+                case .convert(let converted):
+                    localItems.append((b, converted))
+                case .useEngine:
+                    segments.append(TranslationSegment(id: b.id, kind: b.kind, text: b.text))
+                    blockByID[b.id] = b
+                case .keepOriginal:
+                    break
+                }
             }
+        }
+        if !localItems.isEmpty {
+            let localKey = TranslationCacheKey(engine: "local", model: "icu", targetLanguage: targetLanguage.rawValue)
+            try? database?.saveTranslations(documentID: documentID, key: localKey, items: localItems)
+            for (b, t) in localItems { translations[b.pageIndex, default: [:]][b.id] = t }
+            for p in Set(localItems.map(\.0.pageIndex)) { onTranslationsChanged?(p) }
         }
         guard !segments.isEmpty else {
             markDone(pages)
@@ -387,7 +443,7 @@ final class TranslationCoordinator {
         let previousTail = (blocks[pages[0] - 1] ?? []).suffix(2).map(\.text)
         var request = TranslationRequest(segments: segments,
                                          context: TranslationContext(bookTitle: title, precedingText: Array(previousTail)),
-                                         model: model)
+                                         targetLanguage: targetLanguage.rawValue, model: model)
         let started = Date()
 
         // 3. 呼叫引擎；缺漏的區塊重試一次
@@ -412,11 +468,11 @@ final class TranslationCoordinator {
         var done: [Int] = [], failed: [Int] = []
         for p in pages {
             let t = translations[p] ?? [:]
-            let missing = (blocks[p] ?? []).filter { $0.needsTranslation && t[$0.id] == nil }
+            let missing = (blocks[p] ?? []).filter { requiresTranslation($0) && t[$0.id] == nil }
             if missing.isEmpty { done.append(p) } else { failed.append(p) }
         }
         markDone(done)
-        markFailed(failed, "有 \(failed.count) 頁部分段落未翻譯")
+        markFailed(failed, L("部分段落未翻譯", "Some paragraphs were not translated"))
     }
 
     private func handle(error: Error, pages: [Int]) {
@@ -478,17 +534,29 @@ final class TranslationCoordinator {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         selectionTask?.cancel()
+        switch LocalTranslation.decide(text: trimmed, target: targetLanguage) {
+        case .convert(let converted):
+            selection = SelectionTranslation(original: trimmed, translation: converted, error: nil, isLoading: false)
+            return
+        case .keepOriginal:
+            selection = SelectionTranslation(original: trimmed, translation: trimmed,
+                                             error: nil, isLoading: false)
+            return
+        case .useEngine:
+            break
+        }
         selection = SelectionTranslation(original: trimmed, translation: nil, error: nil, isLoading: true)
         let request = TranslationRequest(
             segments: [TranslationSegment(id: "selection", kind: .paragraph, text: String(trimmed.prefix(8000)))],
-            context: TranslationContext(bookTitle: title), model: model)
+            context: TranslationContext(bookTitle: title), targetLanguage: targetLanguage.rawValue, model: model)
         selectionTask = Task {
             do {
                 let response = try await engine.translate(request)
                 guard !Task.isCancelled else { return }
                 let text = response.translations.first { $0.id == "selection" }?.translation
                 selection = SelectionTranslation(original: trimmed, translation: text,
-                                                 error: text == nil ? "沒有取得譯文" : nil, isLoading: false)
+                                                 error: text == nil ? L("沒有取得譯文", "No translation returned") : nil,
+                                                 isLoading: false)
             } catch {
                 guard !Task.isCancelled else { return }
                 selection = SelectionTranslation(original: trimmed, translation: nil,
@@ -499,8 +567,16 @@ final class TranslationCoordinator {
 
     /// 立即翻譯單一區塊（走互動通道並寫入快取）。
     func translateBlockNow(_ block: TextBlock) {
+        if case .convert(let converted) = localDecision(block) {
+            let localKey = TranslationCacheKey(engine: "local", model: "icu", targetLanguage: targetLanguage.rawValue)
+            try? database?.saveTranslations(documentID: documentID, key: localKey, items: [(block, converted)])
+            translations[block.pageIndex, default: [:]][block.id] = converted
+            onTranslationsChanged?(block.pageIndex)
+            return
+        }
         let request = TranslationRequest(segments: [TranslationSegment(id: block.id, kind: block.kind, text: block.text)],
-                                         context: TranslationContext(bookTitle: title), model: model)
+                                         context: TranslationContext(bookTitle: title),
+                                         targetLanguage: targetLanguage.rawValue, model: model)
         Task {
             do {
                 let response = try await engine.translate(request)
@@ -528,7 +604,7 @@ final class TranslationCoordinator {
     func overlayStyles(page: Int, items: [OverlayItem]) async -> (geometry: PageGeometry, styles: [OverlayStyle])? {
         if extractor == nil { extractor = try? TextExtractor(url: url, documentID: documentID) }
         guard let extractor else { return nil }
-        return await extractor.overlayStyles(pageIndex: page, items: items)
+        return await extractor.overlayStyles(pageIndex: page, items: items, fontFamily: fontFamily)
     }
 
     // MARK: - 匯出資料
@@ -541,8 +617,7 @@ final class TranslationCoordinator {
         for p in range {
             guard let blocks = try? database.textBlocks(documentID: documentID, pageIndex: p), !blocks.isEmpty else { continue }
             let t = (try? database.latestTranslations(documentID: documentID, pageIndex: p,
-                                                       targetLanguage: key.targetLanguage,
-                                                       promptVersion: key.promptVersion)) ?? [:]
+                                                       targetLanguage: key.targetLanguage)) ?? [:]
             result[p] = blocks.map { ExportBlock(kind: $0.kind, bounds: $0.bounds, original: $0.text, translation: t[$0.id]) }
         }
         return result

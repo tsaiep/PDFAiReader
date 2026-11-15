@@ -23,6 +23,7 @@ public struct RGBColor: Sendable, Equatable {
 public struct OverlayStyle: Sendable, Equatable {
     public var background: RGBColor
     public var fontSize: CGFloat
+    public var fontFamily: String
 }
 
 public struct OverlayItem: Sendable {
@@ -45,13 +46,14 @@ public enum OverlayRenderer {
     }
 
     /// 計算整頁所有區塊的字級與背景色。內文字級以同頁內文的中位數為上限，避免大小不一。
-    public static func styles(items: [OverlayItem], geometry: PageGeometry, page: PDFPage?) -> [OverlayStyle] {
+    public static func styles(items: [OverlayItem], geometry: PageGeometry, page: PDFPage?,
+                              fontFamily: String) -> [OverlayStyle] {
         guard !items.isEmpty else { return [] }
         let sampler = page.flatMap { BackgroundSampler(page: $0, geometry: geometry) }
         let rects = items.map { displayRect($0.bounds, geometry: geometry) }
         let fits = zip(items, rects).map { item, rect in
             TranslatedPDFExporter.bestFontSize(text: item.text, kind: item.kind, rect: rect,
-                                               maxSize: item.kind == .heading ? 40 : 20)
+                                               maxSize: item.kind == .heading ? 40 : 20, family: fontFamily)
         }
         let body = zip(items, fits).filter { $0.0.kind == .paragraph }.map(\.1).sorted()
         let cap = body.isEmpty ? 20 : body[body.count / 2]
@@ -64,7 +66,7 @@ public enum OverlayRenderer {
             default: break
             }
             let bg = sampler?.color(around: rect) ?? (1, 1, 1)
-            return OverlayStyle(background: RGBColor(r: bg.0, g: bg.1, b: bg.2), fontSize: size)
+            return OverlayStyle(background: RGBColor(r: bg.0, g: bg.1, b: bg.2), fontSize: size, fontFamily: fontFamily)
         }
     }
 
@@ -86,16 +88,17 @@ public enum OverlayRenderer {
         ctx.fill(rect)
         let ink = bg.luminance > 0.5 ? CGColor(gray: 0.06, alpha: 1) : CGColor(gray: 0.97, alpha: 1)
         TranslatedPDFExporter.drawText(ctx: ctx, text: item.text, kind: item.kind, size: style.fontSize,
-                                       rect: rect, color: ink)
+                                       rect: rect, color: ink, family: style.fontFamily)
         ctx.restoreGState()
     }
 }
 
 extension TextExtractor {
     /// 以本 actor 自己的文件實例計算疊加樣式（背景取樣需要渲染頁面，不可在主執行緒的文件上做）。
-    public func overlayStyles(pageIndex: Int, items: [OverlayItem]) -> (geometry: PageGeometry, styles: [OverlayStyle])? {
+    public func overlayStyles(pageIndex: Int, items: [OverlayItem],
+                              fontFamily: String) -> (geometry: PageGeometry, styles: [OverlayStyle])? {
         guard let page = document.page(at: pageIndex) else { return nil }
         let geometry = PageGeometry(cropBox: page.bounds(for: .cropBox), rotation: page.rotation)
-        return (geometry, OverlayRenderer.styles(items: items, geometry: geometry, page: page))
+        return (geometry, OverlayRenderer.styles(items: items, geometry: geometry, page: page, fontFamily: fontFamily))
     }
 }

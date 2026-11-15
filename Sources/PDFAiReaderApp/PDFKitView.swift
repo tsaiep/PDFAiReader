@@ -34,7 +34,7 @@ final class ReaderPDFView: PDFView {
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = super.menu(for: event) ?? NSMenu()
         if let text = currentSelection?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
-            let item = NSMenuItem(title: "翻譯選取文字", action: #selector(translateSelectionAction(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: L("翻譯選取文字", "Translate Selection"), action: #selector(translateSelectionAction(_:)), keyEquivalent: "")
             item.target = self
             item.image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: nil)
             menu.insertItem(item, at: 0)
@@ -64,13 +64,7 @@ struct PDFKitView: NSViewRepresentable {
         view.pageShadowsEnabled = true
         view.enableDataDetectors = false
         view.interpolationQuality = .high
-        view.keyHandler = { [weak model] event in model?.handleKey(event) ?? false }
-        view.scrollHandler = { [weak model] event in model?.handleScroll(event) ?? false }
-        view.swipeHandler = { [weak model] leftSwipe in
-            guard let model else { return }
-            model.turnPage(forward: leftSwipe != (model.readingDirection == .rightToLeft))
-        }
-        view.optionHandler = { [weak model] down in model?.setPeekingOriginal(down) }
+        context.coordinator.installEventMonitor(for: view)
         view.translateSelectionHandler = { [weak model] text in
             model?.showTranslationPanel = true
             model?.translation.translateSelection(text)
@@ -92,6 +86,7 @@ struct PDFKitView: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: ReaderPDFView, coordinator: Coordinator) {
         NotificationCenter.default.removeObserver(coordinator)
+        coordinator.removeEventMonitor()
     }
 
     final class Coordinator: NSObject {
@@ -101,6 +96,46 @@ struct PDFKitView: NSViewRepresentable {
         @MainActor @objc func pageChanged(_ note: Notification) { model.pdfViewPageChanged() }
         @MainActor @objc func scaleChanged(_ note: Notification) { model.pdfViewScaleChanged() }
         @MainActor @objc func selectionChanged(_ note: Notification) { model.pdfViewSelectionChanged() }
+
+        private var monitor: Any?
+
+        /// 觸控板捲動事件是送到 PDFView 內部的捲動視圖，不會經過 PDFView 本身；
+        /// 因此用 App 層級的事件監聽先攔截，交給閱讀模型處理翻頁，未處理的才放行。
+        @MainActor
+        func installEventMonitor(for view: PDFView) {
+            removeEventMonitor()
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .swipe, .keyDown, .flagsChanged]) {
+                [weak self, weak view] event in
+                guard let self, let view, let window = view.window, event.window === window else { return event }
+                switch event.type {
+                case .scrollWheel, .swipe:
+                    let point = view.convert(event.locationInWindow, from: nil)
+                    guard view.bounds.contains(point) else { return event }
+                    if event.type == .swipe {
+                        guard event.deltaX != 0 else { return event }
+                        let rtl = self.model.readingDirection == .rightToLeft
+                        self.model.turnPage(forward: (event.deltaX > 0) != rtl)
+                        return nil
+                    }
+                    return self.model.handleScroll(event) ? nil : event
+                case .keyDown:
+                    // 只在焦點位於 PDF 區域時處理（輸入框打字不受影響）
+                    guard let responder = window.firstResponder as? NSView,
+                          responder === view || responder.isDescendant(of: view) else { return event }
+                    return self.model.handleKey(event) ? nil : event
+                case .flagsChanged:
+                    self.model.setPeekingOriginal(event.modifierFlags.contains(.option))
+                    return event
+                default:
+                    return event
+                }
+            }
+        }
+
+        func removeEventMonitor() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
     }
 }
 
@@ -138,7 +173,7 @@ final class PageRenderCache: @unchecked Sendable {
 
     static func key(index: Int, longSide: CGFloat, overlays: [OverlayDrawing]) -> String {
         var h = Hasher()
-        for o in overlays { h.combine(o.item.text); h.combine(o.style.fontSize) }
+        for o in overlays { h.combine(o.item.text); h.combine(o.style.fontSize); h.combine(o.style.fontFamily) }
         return "\(index)-\(Int(longSide / 40))-\(overlays.count)-\(h.finalize())"
     }
 

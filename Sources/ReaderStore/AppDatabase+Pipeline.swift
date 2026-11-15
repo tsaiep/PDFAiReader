@@ -141,16 +141,16 @@ extension AppDatabase {
         }
     }
 
-    /// 某頁目前有效的譯文，不分引擎與模型，取最新的一筆（換模型後仍沿用既有譯文）。
-    public func latestTranslations(documentID: String, pageIndex: Int, targetLanguage: String,
-                                   promptVersion: String) throws -> [String: String] {
+    /// 某頁目前有效的譯文：同一目標語言、來源文字未變；不分引擎、模型與 Prompt 版本，取最新一筆。
+    /// （換模型或升級 Prompt 後仍沿用既有譯文，「重新翻譯」才會產生新版本。）
+    public func latestTranslations(documentID: String, pageIndex: Int, targetLanguage: String) throws -> [String: String] {
         try writer.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT t.blockID, t.translation FROM translations t
                 JOIN text_blocks b ON b.id = t.blockID AND b.textHash = t.sourceHash
-                WHERE t.documentID = ? AND t.pageIndex = ? AND t.targetLanguage = ? AND t.promptVersion = ?
+                WHERE t.documentID = ? AND t.pageIndex = ? AND t.targetLanguage = ?
                 ORDER BY t.createdAt ASC, t.id ASC
-                """, arguments: [documentID, pageIndex, targetLanguage, promptVersion])
+                """, arguments: [documentID, pageIndex, targetLanguage])
             var map: [String: String] = [:]
             for r in rows { map[r["blockID"]] = r["translation"] }   // 後面的覆蓋前面的 → 最新
             return map

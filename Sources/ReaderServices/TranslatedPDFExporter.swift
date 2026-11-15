@@ -16,9 +16,9 @@ public enum ExportMode: String, CaseIterable, Sendable, Identifiable {
 
     public var label: String {
         switch self {
-        case .inPlace: return "原位翻譯（覆蓋原文，保留圖片與版面）"
-        case .interleaved: return "對照（原頁＋譯文頁交錯）"
-        case .translationOnly: return "純譯文"
+        case .inPlace: return CoreStrings.L("原位翻譯（覆蓋原文，保留圖片與版面）", "In place (replace text, keep images and layout)")
+        case .interleaved: return CoreStrings.L("對照（原頁＋譯文頁交錯）", "Bilingual (original page followed by translation)")
+        case .translationOnly: return CoreStrings.L("純譯文", "Translation only")
         }
     }
 }
@@ -50,9 +50,9 @@ public enum ExportError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .cannotOpenSource: return "無法開啟原始 PDF"
-        case .cannotCreateOutput: return "無法建立輸出檔案"
-        case .cancelled: return "已取消匯出"
+        case .cannotOpenSource: return CoreStrings.L("無法開啟原始 PDF", "Cannot open the original PDF")
+        case .cannotCreateOutput: return CoreStrings.L("無法建立輸出檔案", "Cannot create the output file")
+        case .cancelled: return CoreStrings.L("已取消匯出", "Export cancelled")
         }
     }
 }
@@ -64,6 +64,7 @@ public enum TranslatedPDFExporter {
                               mode: ExportMode,
                               pageRange: ClosedRange<Int>? = nil,
                               blocksByPage: [Int: [ExportBlock]],
+                              fontFamily: String = TargetLanguage.zhHantTW.defaultFont,
                               progress: @Sendable (Int, Int) -> Void = { _, _ in },
                               isCancelled: @Sendable () -> Bool = { false }) throws -> ExportSummary {
         guard let doc = PDFDocument(url: source) else { throw ExportError.cannotOpenSource }
@@ -94,20 +95,19 @@ public enum TranslatedPDFExporter {
 
             switch mode {
             case .inPlace:
-                let sampler = hasTranslation ? BackgroundSampler(page: page, geometry: geometry) : nil
                 drawOriginal(ctx: ctx, pageRef: pageRef, geometry: geometry) {
-                    overlay(ctx: ctx, blocks: blocks, geometry: geometry, sampler: sampler)
+                    overlay(ctx: ctx, blocks: blocks, geometry: geometry, page: page, fontFamily: fontFamily)
                 }
             case .interleaved:
                 drawOriginal(ctx: ctx, pageRef: pageRef, geometry: geometry) {}
                 if hasTranslation {
                     drawTranslationPages(ctx: ctx, size: geometry.displaySize, pageLabel: page.label ?? "\(index + 1)",
-                                         blocks: blocks)
+                                         blocks: blocks, fontFamily: fontFamily)
                 }
             case .translationOnly:
                 if hasTranslation {
                     drawTranslationPages(ctx: ctx, size: geometry.displaySize, pageLabel: page.label ?? "\(index + 1)",
-                                         blocks: blocks)
+                                         blocks: blocks, fontFamily: fontFamily)
                 }
             }
             done += 1
@@ -138,47 +138,26 @@ public enum TranslatedPDFExporter {
 
     // MARK: - 原位覆蓋
 
-    static func overlay(ctx: CGContext, blocks: [ExportBlock], geometry: PageGeometry, sampler: BackgroundSampler? = nil) {
-        let items: [(rect: CGRect, block: ExportBlock, text: String)] = blocks.compactMap { b in
+    /// 原位覆蓋：與閱讀器畫面上的譯文疊加使用同一套排版（OverlayRenderer）。
+    static func overlay(ctx: CGContext, blocks: [ExportBlock], geometry: PageGeometry, page: PDFPage?, fontFamily: String) {
+        let items = blocks.compactMap { b -> OverlayItem? in
             guard let t = b.translation?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
-            let r = geometry.toDisplay(b.bounds.cgRect).insetBy(dx: -1.5, dy: -1.5)
-            return (r, b, t)
+            return OverlayItem(bounds: b.bounds, kind: b.kind, text: t)
         }
         guard !items.isEmpty else { return }
-
-        // 第一輪：每個區塊可容納的最大字級
-        let fits = items.map { item in
-            bestFontSize(text: item.text, kind: item.block.kind, rect: item.rect,
-                         maxSize: item.block.kind == .heading ? 40 : 20)
-        }
-        // 內文字級統一：取內文區塊的中位數為上限，避免中文較短時字級忽大忽小
-        let bodySizes = zip(items, fits).filter { $0.0.block.kind == .paragraph }.map(\.1).sorted()
-        let bodyCap = bodySizes.isEmpty ? 20 : bodySizes[bodySizes.count / 2]
-
-        for (item, fit) in zip(items, fits) {
-            var size = fit
-            if item.block.kind == .paragraph || item.block.kind == .footnote || item.block.kind == .caption {
-                size = min(fit, item.block.kind == .paragraph ? bodyCap : bodyCap * 0.9)
-            }
-            let bg = sampler?.color(around: item.rect) ?? (1, 1, 1)
-            let luminance = 0.299 * bg.0 + 0.587 * bg.1 + 0.114 * bg.2
-            let ink = luminance > 0.5 ? CGColor(gray: 0.06, alpha: 1) : CGColor(gray: 0.97, alpha: 1)
-            ctx.saveGState()
-            // 取樣是在 sRGB 點陣上做的，填色也必須用 sRGB，否則會出現淡淡的色差方框
-            let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
-            ctx.setFillColor(CGColor(colorSpace: srgb, components: [bg.0, bg.1, bg.2, 1])
-                             ?? CGColor(red: bg.0, green: bg.1, blue: bg.2, alpha: 1))
-            ctx.fill(item.rect)
-            drawText(ctx: ctx, text: item.text, kind: item.block.kind, size: size, rect: item.rect, color: ink)
-            ctx.restoreGState()
+        let styles = OverlayRenderer.styles(items: items, geometry: geometry, page: page, fontFamily: fontFamily)
+        for (item, style) in zip(items, styles) {
+            OverlayRenderer.draw(ctx, item: item, style: style,
+                                 rect: OverlayRenderer.displayRect(item.bounds, geometry: geometry))
         }
     }
 
-    static func bestFontSize(text: String, kind: BlockKind, rect: CGRect, maxSize: CGFloat) -> CGFloat {
+    static func bestFontSize(text: String, kind: BlockKind, rect: CGRect, maxSize: CGFloat,
+                             family: String = TargetLanguage.zhHantTW.defaultFont) -> CGFloat {
         var lo: CGFloat = 3, hi = max(3, min(maxSize, rect.height))
         for _ in 0..<12 {
             let mid = (lo + hi) / 2
-            let attr = attributed(text, kind: kind, size: mid)
+            let attr = attributed(text, kind: kind, size: mid, family: family)
             let fs = CTFramesetterCreateWithAttributedString(attr)
             let suggested = CTFramesetterSuggestFrameSizeWithConstraints(
                 fs, CFRange(location: 0, length: 0), nil,
@@ -189,8 +168,9 @@ public enum TranslatedPDFExporter {
     }
 
     static func drawText(ctx: CGContext, text: String, kind: BlockKind, size: CGFloat, rect: CGRect,
-                         color: CGColor = CGColor(gray: 0.06, alpha: 1)) {
-        let attr = attributed(text, kind: kind, size: size, color: color)
+                         color: CGColor = CGColor(gray: 0.06, alpha: 1),
+                         family: String = TargetLanguage.zhHantTW.defaultFont) {
+        let attr = attributed(text, kind: kind, size: size, color: color, family: family)
         let fs = CTFramesetterCreateWithAttributedString(attr)
         let path = CGPath(rect: rect, transform: nil)
         let frame = CTFramesetterCreateFrame(fs, CFRange(location: 0, length: 0), path, nil)
@@ -198,14 +178,17 @@ public enum TranslatedPDFExporter {
         CTFrameDraw(frame, ctx)
     }
 
-    static func font(kind: BlockKind, size: CGFloat) -> CTFont {
-        let name = kind == .heading ? "PingFangTC-Semibold" : "PingFangTC-Regular"
-        return CTFontCreateWithName(name as CFString, size, nil)
+    /// 以字體家族建立字型；標題使用粗體（該字體無粗體時維持原字重）。
+    static func font(kind: BlockKind, size: CGFloat, family: String) -> CTFont {
+        let base = CTFontCreateWithName(family as CFString, size, nil)
+        guard kind == .heading else { return base }
+        return CTFontCreateCopyWithSymbolicTraits(base, size, nil, .traitBold, .traitBold) ?? base
     }
 
     static func attributed(_ text: String, kind: BlockKind, size: CGFloat,
                            color: CGColor = CGColor(gray: 0.05, alpha: 1),
-                           paragraphSpacing: CGFloat = 0) -> CFAttributedString {
+                           paragraphSpacing: CGFloat = 0,
+                           family: String = TargetLanguage.zhHantTW.defaultFont) -> CFAttributedString {
         var lineHeight = size * 1.25
         var spacing = paragraphSpacing
         let style: CTParagraphStyle = withUnsafeBytes(of: &lineHeight) { lh in
@@ -219,7 +202,7 @@ public enum TranslatedPDFExporter {
             }
         }
         let attrs: [CFString: Any] = [
-            kCTFontAttributeName: font(kind: kind, size: size),
+            kCTFontAttributeName: font(kind: kind, size: size, family: family),
             kCTForegroundColorAttributeName: color,
             kCTParagraphStyleAttributeName: style,
         ]
@@ -228,7 +211,8 @@ public enum TranslatedPDFExporter {
 
     // MARK: - 譯文頁
 
-    static func drawTranslationPages(ctx: CGContext, size: CGSize, pageLabel: String, blocks: [ExportBlock]) {
+    static func drawTranslationPages(ctx: CGContext, size: CGSize, pageLabel: String, blocks: [ExportBlock],
+                                     fontFamily: String = TargetLanguage.zhHantTW.defaultFont) {
         let margin = max(28, min(size.width, size.height) * 0.08)
         let body = CFAttributedStringCreateMutable(nil, 0)!
         let base: CGFloat = min(12, max(9, size.width / 50))
@@ -241,7 +225,8 @@ public enum TranslatedPDFExporter {
             case .caption, .footnote: size = base * 0.85; color = CGColor(gray: 0.35, alpha: 1)
             default: size = base; color = CGColor(gray: 0.08, alpha: 1)
             }
-            let a = attributed(text + "\n", kind: kind, size: size, color: color, paragraphSpacing: base * 0.7)
+            let a = attributed(text + "\n", kind: kind, size: size, color: color, paragraphSpacing: base * 0.7,
+                               family: fontFamily)
             CFAttributedStringReplaceAttributedString(body, CFRange(location: CFAttributedStringGetLength(body), length: 0), a)
         }
         for b in blocks {
@@ -258,8 +243,9 @@ public enum TranslatedPDFExporter {
             let info = [kCGPDFContextMediaBox: NSData(bytes: &box, length: MemoryLayout<CGRect>.size)] as CFDictionary
             ctx.beginPDFPage(info)
             // 頁首
-            let header = continuation == 0 ? "第 \(pageLabel) 頁　譯文" : "第 \(pageLabel) 頁　譯文（續）"
-            let headerAttr = attributed(header, kind: .other, size: base * 0.8, color: CGColor(gray: 0.55, alpha: 1))
+            let header = continuation == 0 ? CoreStrings.L("第 \(pageLabel) 頁　譯文", "Page \(pageLabel) — Translation") : CoreStrings.L("第 \(pageLabel) 頁　譯文（續）", "Page \(pageLabel) — Translation (cont.)")
+            let headerAttr = attributed(header, kind: .other, size: base * 0.8, color: CGColor(gray: 0.55, alpha: 1),
+                                        family: fontFamily)
             let headerFrame = CTFramesetterCreateFrame(CTFramesetterCreateWithAttributedString(headerAttr),
                                                        CFRange(location: 0, length: 0),
                                                        CGPath(rect: CGRect(x: margin, y: size.height - margin * 0.75,

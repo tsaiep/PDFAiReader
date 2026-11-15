@@ -138,6 +138,7 @@ final class TranslationOverlayManager {
             return (b, t)
         }
         var hasher = Hasher()
+        hasher.combine(coordinator.fontFamily)
         for (b, t) in entries { hasher.combine(b.id); hasher.combine(t); hasher.combine(b.text) }
         let signature = hasher.finalize()
 
