@@ -41,7 +41,7 @@ struct ContentView: View {
     }
 }
 
-/// 書庫：最近開啟的文件以第一頁作為封面，排成書架。
+/// 最近開啟：以第一頁作為封面，排成書架。
 struct LibraryView: View {
     @Environment(AppModel.self) private var app
     private let columns = [GridItem(.adaptive(minimum: 132, maximum: 168), spacing: 28, alignment: .bottom)]
@@ -49,10 +49,8 @@ struct LibraryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text(L("書庫", "Library")).font(.largeTitle.weight(.semibold))
+                Text(L("最近開啟", "Recent")).font(.largeTitle.weight(.semibold))
                 Spacer()
-                Text(L("拖放 PDF 到視窗即可開啟", "Drop a PDF anywhere to open it"))
-                    .font(.callout).foregroundStyle(.secondary)
                 Button {
                     app.presentOpenPanel()
                 } label: {
@@ -72,8 +70,8 @@ struct LibraryView: View {
                     Image(systemName: "books.vertical")
                         .font(.system(size: 52, weight: .light))
                         .foregroundStyle(.tertiary)
-                    Text(L("書庫還是空的", "Your library is empty")).font(.title3)
-                    Text(L("開啟或拖放一份 PDF，就會出現在這裡。", "Open or drop a PDF and it will appear here."))
+                    Text(L("尚無最近開啟的文件", "No recent documents")).font(.title3)
+                    Text(L("開啟一份 PDF，就會出現在這裡。", "Open a PDF and it will appear here."))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -92,8 +90,8 @@ struct LibraryView: View {
                                         }
                                     }
                                     Divider()
-                                    Button(L("從書庫移除（同時刪除進度、書籤與譯文）",
-                                             "Remove from Library (also deletes progress, bookmarks and translations)"),
+                                    Button(L("從列表移除（同時刪除進度、書籤與譯文）",
+                                             "Remove from List (also deletes progress, bookmarks and translations)"),
                                            role: .destructive) {
                                         app.removeFromRecent(record)
                                     }

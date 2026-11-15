@@ -3,10 +3,9 @@ import PDFKit
 import CoreImage
 import QuartzCore
 
-/// 翻頁動畫：
-/// - 單頁：Core Image 頁面捲曲（柔軟、帶陰影）
-/// - 雙頁：以書脊為軸，整張紙翻到對頁；紙張由多條紙條串成，翻動時自然彎曲，正面是舊頁、背面是新頁
-/// 兩者都可由觸控板手勢即時驅動，放開後依進度與速度完成或回彈；鍵盤翻頁自動播放同一動畫。
+/// 翻頁動畫：Core Image 頁面捲曲（柔軟、帶陰影）。
+/// 單頁捲動該頁；雙頁把整個跨頁當成一張紙，從外側邊緣捲起、越過書脊，露出新的跨頁，與單頁同樣俐落。
+/// 可由觸控板手勢即時驅動，放開後依進度與速度完成或回彈；鍵盤翻頁自動播放同一動畫。
 @MainActor
 final class PageCurlController: NSObject {
     weak var view: PDFView?
@@ -26,7 +25,6 @@ final class PageCurlController: NSObject {
 
     private enum Mode {
         case curl(CurlState)
-        case flip(FlipRig)
     }
 
     private struct CurlState {
@@ -36,6 +34,7 @@ final class PageCurlController: NSObject {
         var extent: CGRect
         var angle: CGFloat
         var reversedTime: Bool
+        var radius: CGFloat
     }
 
     private struct Session {
@@ -83,14 +82,24 @@ final class PageCurlController: NSObject {
 
         let mode: Mode?
         if spread {
-            // 畫面上由左到右
-            let screenOld = (rtl ? Array(before.reversed()) : before).map(\.page)
-            let screenNew = rtl ? Array(newPages.reversed()) : newPages
-            mode = makeFlip(host: hostView, forward: forward, rtl: rtl, screenOld: screenOld, screenNew: screenNew,
-                            rect: rect)
+            // 整個跨頁合成一張圖；新跨頁沿用舊跨頁在畫面上的位置
+            let oldRects = before.map { rect($0.page) }
+            let union = oldRects.dropFirst().reduce(oldRects[0]) { $0.union($1) }
+            let oldPairs = zip(before.map(\.page), oldRects).map { ($0, $1) }
+            let newPairs = zip(newPages, oldRects).map { ($0, $1) }
+            guard let oldImage = composite(oldPairs, in: union), let newImage = composite(newPairs, in: union) else {
+                return false
+            }
+            mode = makeCurl(host: hostView, forward: forward, rtl: rtl, oldImage: oldImage, newImage: newImage,
+                            region: union, sheetWidth: oldRects[0].width)
         } else {
-            mode = makeCurl(host: hostView, forward: forward, rtl: rtl, old: before[0].page, new: newPages[0],
-                            region: rect(before[0].page))
+            let region = rect(before[0].page)
+            if let o = imageForPage(before[0].page), let n = imageForPage(newPages[0]) {
+                mode = makeCurl(host: hostView, forward: forward, rtl: rtl, oldImage: o, newImage: n,
+                                region: region, sheetWidth: region.width)
+            } else {
+                mode = nil
+            }
         }
         guard let mode else { return false }
 
@@ -104,17 +113,18 @@ final class PageCurlController: NSObject {
 
     // MARK: 單頁：Core Image 捲曲
 
-    private func makeCurl(host: PageTurnHostView, forward: Bool, rtl: Bool, old: PDFPage, new: PDFPage,
-                          region: CGRect) -> Mode? {
-        guard region.width > 4, region.height > 4,
-              let oldImage = imageForPage(old), let newImage = imageForPage(new), let root = host.layer else { return nil }
+    private func makeCurl(host: PageTurnHostView, forward: Bool, rtl: Bool, oldImage: CGImage, newImage: CGImage,
+                          region: CGRect, sheetWidth: CGFloat) -> Mode? {
+        guard region.width > 4, region.height > 4, let root = host.layer else { return nil }
         let scale: CGFloat = 1.5
         let extent = CGRect(x: 0, y: 0, width: (region.width * scale).rounded(), height: (region.height * scale).rounded())
         let oldCI = Self.fit(CIImage(cgImage: oldImage), to: extent.size)
         let newCI = Self.fit(CIImage(cgImage: newImage), to: extent.size)
-        // 從閱讀方向前方的邊緣翻起；稍微傾斜，下角先離開
+        // 往前翻：從右緣捲起、往左移動；往回翻：從左緣捲起、往右移動（右至左閱讀時相反）。
+        // 稍微傾斜，下角先離開。
         let tilt: CGFloat = 0.18
-        let angle: CGFloat = (forward != rtl) ? (.pi - tilt) : tilt
+        let fromRightEdge = forward != rtl
+        let angle: CGFloat = fromRightEdge ? (.pi - tilt) : tilt
 
         let layer = CALayer()
         layer.frame = region
@@ -124,57 +134,27 @@ final class PageCurlController: NSObject {
         root.addSublayer(layer)
         CATransaction.commit()
 
-        // 往回翻：上一頁為正面、時間反向 → 上一頁從另一側攤平蓋回來
-        let state = forward
-            ? CurlState(layer: layer, front: oldCI, target: newCI, extent: extent, angle: angle, reversedTime: false)
-            : CurlState(layer: layer, front: newCI, target: oldCI, extent: extent, angle: angle, reversedTime: true)
-        return .curl(state)
+        // 捲曲半徑以「一頁寬」為準，雙頁與單頁的紙張彎曲程度一致
+        let radius = sheetWidth * scale * 0.22
+        return .curl(CurlState(layer: layer, front: oldCI, target: newCI, extent: extent, angle: angle,
+                               reversedTime: false, radius: radius))
     }
 
-    // MARK: 雙頁：整張紙繞書脊翻到對頁
-
-    private func makeFlip(host: PageTurnHostView, forward: Bool, rtl: Bool, screenOld: [PDFPage], screenNew: [PDFPage],
-                          rect: (PDFPage) -> CGRect) -> Mode? {
-        guard screenOld.count == 2, screenNew.count == 2, let root = host.layer else { return nil }
-        // 往前讀翻動閱讀方向前方那張：左至右 → 右頁往左翻；右至左 → 左頁往右翻
-        let sheetOnRight = forward != rtl
-        let sheetPage = sheetOnRight ? screenOld[1] : screenOld[0]
-        let staticOld = sheetOnRight ? screenOld[0] : screenOld[1]   // 對頁（之後被翻過來的紙蓋住）
-        let landing = sheetOnRight ? screenNew[0] : screenNew[1]      // 紙張背面＝落在對頁的新頁
-        let revealed = sheetOnRight ? screenNew[1] : screenNew[0]     // 紙張底下露出的新頁
-
-        let leftRect = rect(screenOld[0]), rightRect = rect(screenOld[1])
-        let sheetRect = rect(sheetPage)
-        guard sheetRect.width > 4,
-              let front = imageForPage(sheetPage), let back = imageForPage(landing),
-              let under = imageForPage(revealed), let opposite = imageForPage(staticOld) else { return nil }
-
-        let spineX = (leftRect.maxX + rightRect.minX) / 2
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        // 底層：對頁（舊）＋紙張下方的新頁
-        for (image, frame) in [(opposite, rect(staticOld)), (under, sheetRect)] {
-            let l = CALayer()
-            l.frame = frame
-            l.contents = image
-            l.contentsGravity = .resize
-            root.addSublayer(l)
+    /// 把數個頁面依畫面位置合成一張圖（頁面之間保持透明）。
+    private func composite(_ pages: [(PDFPage, CGRect)], in union: CGRect) -> CGImage? {
+        let scale: CGFloat = 1.5
+        let w = Int((union.width * scale).rounded()), h = Int((union.height * scale).rounded())
+        guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                                 space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        for (page, r) in pages {
+            guard let image = imageForPage(page) else { return nil }
+            let dest = CGRect(x: (r.minX - union.minX) * scale, y: (r.minY - union.minY) * scale,
+                              width: r.width * scale, height: r.height * scale)
+            ctx.draw(image, in: dest)
         }
-        // 透視中心放在書脊
-        let container = CALayer()
-        container.frame = root.bounds
-        let dx = spineX - root.bounds.midX, dy = sheetRect.midY - root.bounds.midY
-        var perspective = CATransform3DIdentity
-        perspective.m34 = -1.0 / 2200
-        container.sublayerTransform = CATransform3DConcat(
-            CATransform3DConcat(CATransform3DMakeTranslation(-dx, -dy, 0), perspective),
-            CATransform3DMakeTranslation(dx, dy, 0))
-        let rig = FlipRig(spine: CGPoint(x: spineX, y: sheetRect.midY), sheetSize: sheetRect.size,
-                          extendsRight: sheetOnRight, front: front, back: back)
-        container.addSublayer(rig.root)
-        root.addSublayer(container)
-        CATransaction.commit()
-        return .flip(rig)
+        return ctx.makeImage()
     }
 
     // MARK: - 互動
@@ -205,8 +185,8 @@ final class PageCurlController: NSObject {
     private func animate(to target: CGFloat) {
         guard let s = session, let view else { return }
         let distance = abs(target - s.progress)
-        let full: Double
-        if case .flip = s.mode { full = 0.6 } else { full = 0.45 }
+        // 雙頁紙張較寬，稍微放慢
+        let full: Double = isSpread() ? 0.55 : 0.45
         animation = (s.progress, target, CACurrentMediaTime(), max(0.12, full * Double(distance)))
         if link == nil {
             let l = view.displayLink(target: self, selector: #selector(tick(_:)))
@@ -248,11 +228,9 @@ final class PageCurlController: NSObject {
         case .curl(let c):
             let time = c.reversedTime ? 1 - p : p
             if let cg = Self.frame(front: c.front, target: c.target, extent: c.extent, time: time,
-                                   angle: c.angle, context: context) {
+                                   angle: c.angle, radius: c.radius, context: context) {
                 c.layer.contents = cg
             }
-        case .flip(let rig):
-            rig.apply(progress: p)
         }
         CATransaction.commit()
     }
@@ -303,7 +281,7 @@ final class PageCurlController: NSObject {
 
     /// 產生一格捲曲畫面。
     static func frame(front: CIImage, target: CIImage, extent: CGRect, time: CGFloat, angle: CGFloat,
-                      context: CIContext) -> CGImage? {
+                      radius: CGFloat? = nil, context: CIContext) -> CGImage? {
         guard let filter = CIFilter(name: "CIPageCurlWithShadowTransition") else { return nil }
         filter.setValue(front, forKey: kCIInputImageKey)
         filter.setValue(target, forKey: kCIInputTargetImageKey)
@@ -311,8 +289,9 @@ final class PageCurlController: NSObject {
         filter.setValue(time, forKey: kCIInputTimeKey)
         filter.setValue(angle, forKey: kCIInputAngleKey)
         // 半徑大 → 紙張彎曲較緩，看起來比較軟
-        filter.setValue(extent.width * 0.22, forKey: kCIInputRadiusKey)
-        filter.setValue(extent.width * 0.04, forKey: "inputShadowSize")
+        let r = radius ?? extent.width * 0.22
+        filter.setValue(r, forKey: kCIInputRadiusKey)
+        filter.setValue(r * 0.18, forKey: "inputShadowSize")
         filter.setValue(0.55, forKey: "inputShadowAmount")
         guard let output = filter.outputImage?.cropped(to: extent) else { return nil }
         return context.createCGImage(output, from: extent)
@@ -324,85 +303,5 @@ final class PageCurlController: NSObject {
         return image
             .transformed(by: CGAffineTransform(translationX: -e.minX, y: -e.minY))
             .transformed(by: CGAffineTransform(scaleX: size.width / e.width, y: size.height / e.height))
-    }
-}
-
-/// 雙頁翻頁的紙張：以書脊為軸，由多條紙條串成，每條相對前一條再多轉一點，
-/// 翻到一半時紙張自然彎曲；翻完回到平整並落在對頁。正面是舊頁、背面是對頁的新頁。
-@MainActor
-final class FlipRig {
-    let root = CATransformLayer()
-    private var nodes: [CATransformLayer] = []
-    private var frontShades: [CALayer] = []
-    private var backShades: [CALayer] = []
-    private let direction: CGFloat
-    private let count: Int
-
-    /// - Parameter extendsRight: 紙張在書脊右側（往左翻）為 true
-    init(spine: CGPoint, sheetSize: CGSize, extendsRight: Bool, front: CGImage, back: CGImage, strips: Int = 16) {
-        direction = extendsRight ? 1 : -1
-        count = strips
-        let w = sheetSize.width / CGFloat(strips)
-        let h = sheetSize.height
-        root.bounds = .zero
-        root.position = spine
-
-        var parent: CALayer = root
-        for i in 0..<strips {
-            let node = CATransformLayer()
-            node.bounds = .zero
-            node.position = i == 0 ? .zero : CGPoint(x: direction * w, y: 0)
-            parent.addSublayer(node)
-
-            // 稍微重疊避免紙條之間出現細縫
-            let frame = CGRect(x: extendsRight ? 0 : -w, y: -h / 2, width: w + 0.6, height: h)
-            // 正面切片：紙條在頁面上由左往右的序號
-            let frontSlice = extendsRight ? i : strips - 1 - i
-            // 背面切片：翻過去後落在對頁的位置
-            let backSlice = extendsRight ? strips - 1 - i : i
-
-            let f = makeStrip(frame: frame, image: front, slice: frontSlice, of: strips)
-            let b = makeStrip(frame: frame, image: back, slice: backSlice, of: strips)
-            b.transform = CATransform3DMakeRotation(.pi, 0, 1, 0)
-
-            node.addSublayer(f)
-            node.addSublayer(b)
-            nodes.append(node)
-            frontShades.append(f.sublayers![0])
-            backShades.append(b.sublayers![0])
-            parent = node
-        }
-    }
-
-    private func makeStrip(frame: CGRect, image: CGImage, slice: Int, of strips: Int) -> CALayer {
-        let l = CALayer()
-        l.frame = frame
-        l.contents = image
-        l.contentsGravity = .resize
-        l.contentsRect = CGRect(x: CGFloat(slice) / CGFloat(strips), y: 0, width: 1 / CGFloat(strips), height: 1)
-        l.isDoubleSided = false
-        let shade = CALayer()
-        shade.frame = l.bounds
-        shade.backgroundColor = CGColor(gray: 0, alpha: 1)
-        shade.opacity = 0
-        l.addSublayer(shade)
-        return l
-    }
-
-    /// 進度 0 = 紙張平放在原位；1 = 翻到對頁平放。
-    func apply(progress p: CGFloat) {
-        let base = -direction * p * .pi
-        // 彎曲量：翻到一半時最大，外緣領先（像用手從邊緣掀起），頭尾回到平整
-        let curve = sin(p * .pi)
-        let perStrip = -direction * curve * 0.85 / CGFloat(count)
-        for (i, node) in nodes.enumerated() {
-            node.transform = CATransform3DMakeRotation(i == 0 ? base : perStrip, 0, 1, 0)
-        }
-        // 光影：正面越翻越暗；背面剛翻過來較暗、落下時變亮；彎曲處略暗增加立體感
-        for i in 0..<count {
-            let edge = CGFloat(i) / CGFloat(max(1, count - 1))
-            frontShades[i].opacity = Float(min(0.55, p * 0.45 + curve * edge * 0.12))
-            backShades[i].opacity = Float(min(0.55, (1 - p) * 0.4 + curve * (1 - edge) * 0.12))
-        }
     }
 }

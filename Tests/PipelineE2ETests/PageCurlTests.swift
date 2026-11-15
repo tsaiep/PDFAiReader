@@ -41,11 +41,40 @@ final class PageCurlTests: XCTestCase {
             frames.append(try XCTUnwrap(PageCurlController.frame(front: a, target: b, extent: extent, time: t,
                                                                  angle: forwardAngle, context: ctx)))
         }
-        // 往回翻：上一頁（B）為正面、時間反向
-        for p in [CGFloat(0.35), 0.65] {
-            frames.append(try XCTUnwrap(PageCurlController.frame(front: b, target: a, extent: extent, time: 1 - p,
-                                                                 angle: forwardAngle, context: ctx)))
+        // 往回翻：目前頁（A）從左緣捲起、往右移動，露出上一頁（B）
+        for t in [CGFloat(0.35), 0.65] {
+            frames.append(try XCTUnwrap(PageCurlController.frame(front: a, target: b, extent: extent, time: t,
+                                                                 angle: 0.18, context: ctx)))
         }
+
+        // 雙頁：整個跨頁（A|B → C|D）一起捲，半徑以一頁寬為準
+        let spreadSize = CGSize(width: size.width * 2 + 24, height: size.height)
+        let spreadExtent = CGRect(origin: .zero, size: spreadSize)
+        func spread(_ l: CIImage, _ r: CIImage) -> CIImage {
+            r.transformed(by: CGAffineTransform(translationX: size.width + 24, y: 0)).composited(over: l)
+        }
+        let oldSpread = spread(a, b)
+        let newSpread = spread(page("C", color: NSColor(calibratedRed: 0.9, green: 1, blue: 0.88, alpha: 1), size: size),
+                               page("D", color: NSColor(calibratedRed: 1, green: 0.9, blue: 0.95, alpha: 1), size: size))
+        var spreadFrames: [CGImage] = []
+        for t in [CGFloat(0.2), 0.45, 0.7] {
+            spreadFrames.append(try XCTUnwrap(PageCurlController.frame(front: oldSpread, target: newSpread, extent: spreadExtent,
+                                                                       time: t, angle: forwardAngle, radius: size.width * 0.22,
+                                                                       context: ctx)))
+        }
+        let sw = 420, sh = 150
+        let spreadSheet = NSImage(size: NSSize(width: sw * spreadFrames.count, height: sh), flipped: false) { _ in
+            NSColor.darkGray.setFill()
+            NSRect(x: 0, y: 0, width: sw * spreadFrames.count, height: sh).fill()
+            for (i, f) in spreadFrames.enumerated() {
+                NSImage(cgImage: f, size: .zero).draw(in: NSRect(x: i * sw, y: 0, width: sw - 8, height: sh))
+            }
+            return true
+        }
+        let spreadRep = NSBitmapImageRep(data: spreadSheet.tiffRepresentation!)!
+        let spreadDir = root.appendingPathComponent(".dev/artifacts")
+        try FileManager.default.createDirectory(at: spreadDir, withIntermediateDirectories: true)
+        try spreadRep.representation(using: .png, properties: [:])!.write(to: spreadDir.appendingPathComponent("curl-spread.png"))
 
         // 效能：連續 30 格
         let start = Date()
