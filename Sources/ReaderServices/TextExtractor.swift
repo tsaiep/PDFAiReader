@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import PDFKit
 import Vision
 import CoreGraphics
@@ -88,8 +89,27 @@ public actor TextExtractor {
             guard let text = line.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
             let b = line.bounds(for: page)
             guard b.width > 0, b.height > 0 else { return nil }
-            return TextLine(text: text, bounds: PageRect(b), confidence: 1)
+            return TextLine(text: text, bounds: PageRect(b), confidence: 1, isBold: isBoldFont(line))
         }
+    }
+
+    /// 內嵌文字：多數字元使用粗體字型即視為粗體。
+    static func isBoldFont(_ selection: PDFSelection) -> Bool {
+        guard let attributed = selection.attributedString, attributed.length > 0 else { return false }
+        var bold = 0, total = 0
+        attributed.enumerateAttribute(.font, in: NSRange(location: 0, length: attributed.length)) { value, range, _ in
+            let text = (attributed.string as NSString).substring(with: range)
+            let count = text.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.count
+            guard count > 0 else { return }
+            total += count
+            guard let font = value as? NSFont else { return }
+            let name = font.fontName.lowercased()
+            if font.fontDescriptor.symbolicTraits.contains(.bold)
+                || ["bold", "black", "heavy", "semibold", "demi"].contains(where: { name.contains($0) }) {
+                bold += count
+            }
+        }
+        return total > 0 && Double(bold) / Double(total) > 0.6
     }
 
     // MARK: - OCR
@@ -105,11 +125,24 @@ public actor TextExtractor {
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         try handler.perform([request])
         let observations = request.results ?? []
-        return observations.compactMap { obs in
-            guard let candidate = obs.topCandidates(1).first else { return nil }
+        var lines: [TextLine] = []
+        var densities: [Double] = []
+        let ink = InkSampler(image: image)
+        for obs in observations {
+            guard let candidate = obs.topCandidates(1).first else { continue }
             let rect = geometry.pageRect(fromNormalized: obs.boundingBox)
-            return TextLine(text: candidate.string, bounds: PageRect(rect), confidence: Double(candidate.confidence))
+            lines.append(TextLine(text: candidate.string, bounds: PageRect(rect), confidence: Double(candidate.confidence)))
+            densities.append(ink?.density(normalized: obs.boundingBox) ?? 0)
         }
+        // 掃描頁：墨水濃度明顯高於同頁中位數的行視為粗體
+        let valid = densities.filter { $0 > 0 }.sorted()
+        if valid.count >= 4 {
+            let median = valid[valid.count / 2]
+            for i in lines.indices where densities[i] > median * 1.3 && lines[i].text.count >= 2 {
+                lines[i].isBold = true
+            }
+        }
+        return lines
     }
 
     /// 以顯示方向（套用旋轉）渲染頁面，白底。
@@ -129,5 +162,51 @@ public actor TextExtractor {
         ctx.concatenate(geometry.pageToDisplay)
         ctx.drawPDFPage(pageRef)
         return ctx.makeImage()
+    }
+}
+
+/// 估計文字行的墨水濃度（深色像素比例），用來判斷掃描頁上的粗體。
+struct InkSampler {
+    private let pixels: [UInt8]
+    private let width: Int
+    private let height: Int
+
+    init?(image: CGImage) {
+        // 縮小到長邊約 1200 px 的灰階圖，足以判斷筆畫粗細
+        let scale = min(1, 1200 / Double(max(image.width, image.height)))
+        let w = max(1, Int(Double(image.width) * scale)), h = max(1, Int(Double(image.height) * scale))
+        var buffer = [UInt8](repeating: 255, count: w * h)
+        let ok: Bool = buffer.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                      space: CGColorSpaceCreateDeviceGray(),
+                                      bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            ctx.interpolationQuality = .medium
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard ok else { return nil }
+        pixels = buffer
+        width = w
+        height = h
+    }
+
+    /// Vision 正規化座標（原點左下）範圍內，深色像素佔比。
+    func density(normalized r: CGRect) -> Double {
+        // 只取中間 60% 高度，避開上下行的筆畫
+        let x0 = max(0, Int(r.minX * Double(width))), x1 = min(width, Int(r.maxX * Double(width)))
+        let yTop = r.maxY - r.height * 0.2, yBottom = r.minY + r.height * 0.2
+        let row0 = max(0, Int((1 - yTop) * Double(height))), row1 = min(height, Int((1 - yBottom) * Double(height)))
+        guard x1 > x0, row1 > row0 else { return 0 }
+        var dark = 0, total = 0
+        let step = max(1, (x1 - x0) / 400)
+        for y in row0..<row1 {
+            var x = x0
+            while x < x1 {
+                if pixels[y * width + x] < 110 { dark += 1 }
+                total += 1
+                x += step
+            }
+        }
+        return total > 0 ? Double(dark) / Double(total) : 0
     }
 }

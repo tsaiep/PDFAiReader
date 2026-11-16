@@ -87,9 +87,12 @@ struct TranslationPanelView: View {
                 Menu {
                     FontMenu()
                     Divider()
-                    Button(L("整份翻譯…", "Translate Whole Document…")) { reader.activeSheet = .wholeTranslation }
+                    Button(L("整份翻譯／重新翻譯…", "Translate or Retranslate Whole Document…")) { reader.activeSheet = .wholeTranslation }
                     Button(L("匯出翻譯 PDF…", "Export Translated PDF…")) { reader.activeSheet = .export }
                     Divider()
+                    Button(L("重新辨識並翻譯目前頁面", "Re-recognize & Retranslate Current Pages")) {
+                        coordinator.reExtractFocusPages()
+                    }
                     Button(L("重試失敗的頁面", "Retry Failed Pages")) { coordinator.retryFailed() }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -123,7 +126,7 @@ private struct PageSection: View {
                 Menu {
                     Button(L("翻譯此頁", "Translate Page")) { coordinator.translatePages([page]) }
                     Button(L("重新翻譯此頁", "Retranslate Page")) { coordinator.retranslate(page) }
-                    Button(L("重新辨識文字（OCR）", "Re-run Text Recognition (OCR)")) { coordinator.reExtract(page) }
+                    Button(L("重新辨識並翻譯此頁", "Re-recognize & Retranslate Page")) { coordinator.reExtract(page) }
                     Divider()
                     Button(L("複製本頁譯文", "Copy Page Translation")) {
                         let text = (blocks ?? []).compactMap { translations[$0.id] }.joined(separator: "\n\n")

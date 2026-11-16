@@ -5,11 +5,14 @@ public struct TextLine: Sendable, Equatable {
     public var text: String
     public var bounds: PageRect
     public var confidence: Double
+    /// 粗體（內嵌文字讀字型屬性；掃描頁以墨水濃度估計）。
+    public var isBold: Bool
 
-    public init(text: String, bounds: PageRect, confidence: Double = 1) {
+    public init(text: String, bounds: PageRect, confidence: Double = 1, isBold: Bool = false) {
         self.text = text
         self.bounds = bounds
         self.confidence = confidence
+        self.isBold = isBold
     }
 }
 
@@ -31,6 +34,7 @@ public struct LayoutAnalyzer: Sendable {
         guard !lines.isEmpty else { return Result(blocks: [], columnCount: 1) }
 
         let medianHeight = Self.median(lines.map(\.bounds.height))
+        let medianWidth = Self.median(lines.map(\.bounds.width))
         let split = Self.columnSplit(lines: lines, pageBounds: pageBounds)
         let ordered = Self.readingOrder(lines: lines, pageBounds: pageBounds, split: split)
 
@@ -38,7 +42,10 @@ public struct LayoutAnalyzer: Sendable {
         var groups: [[TextLine]] = []
         for item in ordered {
             if let last = groups.last?.last,
-               Self.continuesParagraph(prev: last, next: item.line, medianHeight: medianHeight),
+               Self.continuesParagraph(prev: last, next: item.line, medianHeight: medianHeight,
+                                       prevGroupCount: groups[groups.count - 1].count,
+                                       columnWidth: Self.columnWidth(for: item.line, lines: lines, split: split,
+                                                                     fallback: medianWidth)),
                groups[groups.count - 1].count < 200,
                item.startsNewRegion == false {
                 groups[groups.count - 1].append(item.line)
@@ -53,7 +60,7 @@ public struct LayoutAnalyzer: Sendable {
             let text = Self.join(group.map(\.text))
             let confidence = group.map(\.confidence).reduce(0, +) / Double(group.count)
             let kind = Self.classify(group: group, bounds: bounds, text: text,
-                                     medianHeight: medianHeight, pageBounds: pageBounds)
+                                     medianHeight: medianHeight, medianWidth: medianWidth, pageBounds: pageBounds)
             blocks.append(TextBlock(id: TextBlock.makeID(documentID: documentID, pageIndex: pageIndex, order: order),
                                     documentID: documentID, pageIndex: pageIndex, readingOrder: order,
                                     kind: kind, text: text, bounds: bounds, confidence: confidence,
@@ -143,7 +150,39 @@ public struct LayoutAnalyzer: Sendable {
 
     // MARK: - 段落合併
 
-    static func continuesParagraph(prev: TextLine, next: TextLine, medianHeight: Double) -> Bool {
+    /// 某行所在欄的一般行寬（雙欄時只看同一欄的行）。
+    static func columnWidth(for line: TextLine, lines: [TextLine], split: Double?, fallback: Double) -> Double {
+        guard let split else { return fallback }
+        let sameColumn = lines.filter { ($0.bounds.midX < split) == (line.bounds.midX < split) && $0.bounds.width < 0.6 * (split * 2) }
+        return sameColumn.isEmpty ? fallback : median(sameColumn.map(\.bounds.width))
+    }
+
+    /// 像標題的短行：比一般行短、沒有句末標點、開頭是大寫／數字／漢字。
+    static func isTitleLike(_ line: TextLine, columnWidth: Double) -> Bool {
+        line.bounds.width < columnWidth * 0.72 && line.text.count < 120 && !endsSentence(line.text)
+            && startsLikeSentence(line.text)
+    }
+
+    static func startsLikeSentence(_ text: String) -> Bool {
+        guard let first = text.unicodeScalars.first(where: { !CharacterSet.punctuationCharacters.contains($0)
+                                                            && !CharacterSet.whitespaces.contains($0) }) else { return false }
+        return CharacterSet.uppercaseLetters.contains(first) || CharacterSet.decimalDigits.contains(first)
+            || (first.value >= 0x3400 && first.value <= 0x9FFF)
+    }
+
+    static func continuesParagraph(prev: TextLine, next: TextLine, medianHeight: Double,
+                                   prevGroupCount: Int = 2, columnWidth: Double = 0) -> Bool {
+        // 粗體與一般字不同段（字級相同的小標題）
+        if prev.isBold != next.isBold { return false }
+        let width = columnWidth > 0 ? columnWidth : max(prev.bounds.width, next.bounds.width)
+        // 小標題之前：上一行句子已結束，這一行是像標題的短行 → 斷開（小標題上方間距很小時也能分開）
+        if endsSentence(prev.text), isTitleLike(next, columnWidth: width) {
+            return false
+        }
+        // 小標題之後：單獨一行的短行、無句末標點，下一行以大寫開頭 → 斷開
+        if prevGroupCount == 1, isTitleLike(prev, columnWidth: width), startsLikeSentence(next.text) {
+            return false
+        }
         let h1 = prev.bounds.height, h2 = next.bounds.height
         let ratio = max(h1, h2) / max(0.01, min(h1, h2))
         guard ratio < 1.35 else { return false }
@@ -179,15 +218,32 @@ public struct LayoutAnalyzer: Sendable {
 
     // MARK: - 種類判斷
 
+    static func endsSentence(_ text: String) -> Bool {
+        guard let last = text.trimmingCharacters(in: .whitespaces).last else { return false }
+        return ".!?。！？:：;；,，\"”’)）…-".contains(last)
+    }
+
     static func classify(group: [TextLine], bounds: PageRect, text: String,
-                         medianHeight: Double, pageBounds: PageRect) -> BlockKind {
+                         medianHeight: Double, medianWidth: Double = 0, pageBounds: PageRect) -> BlockKind {
         let avgHeight = group.map(\.bounds.height).reduce(0, +) / Double(group.count)
         let lower = text.lowercased()
+        let allBold = group.allSatisfy(\.isBold)
         let captionPrefixes = ["fig.", "fig ", "figure", "plate", "pl.", "圖", "圖片", "abb.", "ill."]
         if captionPrefixes.contains(where: { lower.hasPrefix($0) }) && text.count < 400 {
             return .caption
         }
         if avgHeight > medianHeight * 1.3 && group.count <= 3 && text.count < 200 {
+            return .heading
+        }
+        // 粗體短段落 → 小標題
+        if allBold && group.count <= 3 && text.count < 200 {
+            return .heading
+        }
+        // 單行、比一般行短、無句末標點、位於頁面上方 85% 內 → 小標題
+        let relTop = (bounds.maxY - pageBounds.minY) / max(1, pageBounds.height)
+        if group.count == 1, medianWidth > 0, bounds.width < medianWidth * 0.72, text.count < 120,
+           !endsSentence(text), relTop > 0.15, avgHeight >= medianHeight * 0.92,
+           text.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) {
             return .heading
         }
         // 單行、字級略大、沒有句末標點 → 小標題

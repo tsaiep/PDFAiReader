@@ -52,6 +52,46 @@ final class LayoutTests: XCTestCase {
         XCTAssertEqual(r.blocks.last?.kind, .caption)
     }
 
+    func testBoldSubheadingSameSizeIsSeparated() {
+        var heading = line("Early Practice", x: 50, top: 700, w: 110)
+        heading.isBold = true
+        let lines = [
+            heading,
+            line("Early practitioners understood the camera as an instrument", x: 50, top: 686, w: 500),
+            line("of record, yet many treated it as a means of composing.", x: 50, top: 672, w: 480),
+        ]
+        let r = LayoutAnalyzer().analyze(lines: lines, pageBounds: page, documentID: "d", pageIndex: 0, source: .ocr)
+        XCTAssertEqual(r.blocks.count, 2)
+        XCTAssertEqual(r.blocks[0].kind, .heading)
+        XCTAssertEqual(r.blocks[0].text, "Early Practice")
+        XCTAssertTrue(r.blocks[1].text.hasPrefix("Early practitioners"))
+    }
+
+    func testShortTitleLineWithoutPunctuationIsSeparated() {
+        let lines = [
+            line("A long first paragraph line that fills the column width nicely", x: 50, top: 740, w: 500),
+            line("and ends right here.", x: 50, top: 726, w: 160),
+            line("The Deadpan Aesthetic", x: 50, top: 700, w: 170),
+            line("The deadpan aesthetic favoured a cool, detached and sharply", x: 50, top: 686, w: 500),
+            line("detailed style using large-format cameras.", x: 50, top: 672, w: 330),
+        ]
+        let r = LayoutAnalyzer().analyze(lines: lines, pageBounds: page, documentID: "d", pageIndex: 0, source: .ocr)
+        XCTAssertEqual(r.blocks.map(\.kind), [.paragraph, .heading, .paragraph], r.blocks.map(\.text).description)
+        XCTAssertEqual(r.blocks[1].text, "The Deadpan Aesthetic")
+    }
+
+    func testParagraphLastLineStaysInParagraph() {
+        let lines = [
+            line("This paragraph has a long first line that spans the column", x: 50, top: 740, w: 500),
+            line("and a short last line", x: 50, top: 726, w: 170),
+            line("Next paragraph starts with a full line of ordinary body text", x: 50, top: 700, w: 500),
+            line("and continues here.", x: 50, top: 686, w: 150),
+        ]
+        let r = LayoutAnalyzer().analyze(lines: lines, pageBounds: page, documentID: "d", pageIndex: 0, source: .ocr)
+        XCTAssertEqual(r.blocks.count, 2)
+        XCTAssertTrue(r.blocks.allSatisfy { $0.kind == .paragraph })
+    }
+
     func testNeedsTranslation() {
         let b = TextBlock(id: "x", documentID: "d", pageIndex: 0, readingOrder: 0, kind: .other,
                           text: "12", bounds: page, confidence: 1, source: .ocr)

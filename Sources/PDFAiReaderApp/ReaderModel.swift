@@ -425,7 +425,8 @@ final class ReaderModel {
     func handleKey(_ event: NSEvent) -> Bool {
         let mods = event.modifierFlags.intersection([.command, .option, .control])
         guard mods.isEmpty else { return false }
-        if event.charactersIgnoringModifiers?.lowercased() == "c" {
+        // 以實體按鍵判斷（keyCode 8 = C），不論目前是注音、拼音或其他輸入法都有效
+        if event.keyCode == 8 || event.charactersIgnoringModifiers?.lowercased() == "c" {
             toggleTranslation()
             return true
         }

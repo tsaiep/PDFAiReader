@@ -86,6 +86,7 @@ final class TranslationCoordinator {
     @ObservationIgnored private var extractor: TextExtractor?
     @ObservationIgnored private var queue: [Int: JobPriority] = [:]
     @ObservationIgnored private var forceRetranslate: Set<Int> = []
+    @ObservationIgnored private var forceReextract: Set<Int> = []
     @ObservationIgnored private var worker: Task<Void, Never>?
     @ObservationIgnored private var extractionTasks: [Int: Task<[TextBlock], Error>] = [:]
     @ObservationIgnored private var selectionTask: Task<Void, Never>?
@@ -115,6 +116,13 @@ final class TranslationCoordinator {
         let states = (try? db.pageTranslationStates(documentID: documentID, key: statusKey)) ?? [:]
         completedPages = Set(states.values.filter { $0.state == .done }.map(\.pageIndex))
         for (i, s) in states {
+            if s.errorMessage == Self.pendingRetranslateMarker {
+                // 整份重新翻譯尚未處理到的頁面
+                forceRetranslate.insert(i)
+                forceReextract.insert(i)
+                if status[i] == nil || status[i] == .done { status[i] = .idle }
+                continue
+            }
             status[i] = s.state == .done ? .done : .failed(s.errorMessage ?? L("翻譯失敗", "Translation failed"))
         }
         if let active = try? db.preference("whole.active", scope: documentID), active == "1",
@@ -268,13 +276,24 @@ final class TranslationCoordinator {
         }
     }
 
-    func reExtract(_ page: Int) {
+    /// 以最新的版面規則重新辨識文字，接著重新翻譯（文字有變動的段落才會呼叫 AI）。
+    func reExtract(_ page: Int) { reExtract([page]) }
+
+    func reExtract(_ pages: [Int]) {
+        let targets = pages.filter { $0 >= 0 && $0 < pageCount }
+        guard !targets.isEmpty else { return }
         Task {
-            _ = try? await extractIfNeeded(page, force: true)
-            completedPages.remove(page)
-            status[page] = .idle
+            for p in targets {
+                completedPages.remove(p)
+                _ = try? await extractIfNeeded(p, force: true)
+                if status[p] != .extracting { status[p] = .idle }
+            }
+            translatePages(targets)
         }
     }
+
+    /// 目前畫面上的頁面：重新辨識並翻譯。
+    func reExtractFocusPages() { reExtract(focusPages.isEmpty ? Array(visible).sorted() : focusPages) }
 
     // MARK: - 佇列
 
@@ -306,7 +325,21 @@ final class TranslationCoordinator {
 
     // MARK: - 整份翻譯
 
-    func startWhole(range: ClosedRange<Int>) {
+    /// 整份重新翻譯時，尚未重翻的頁面在資料庫中以此標記，重新開啟後可以接續。
+    static let pendingRetranslateMarker = "__pending_retranslate__"
+
+    /// - Parameter retranslate: true = 以最新版面規則重新辨識並重新翻譯範圍內所有頁面（包含已翻譯的）
+    func startWhole(range: ClosedRange<Int>, retranslate: Bool = false) {
+        if retranslate {
+            for p in range {
+                forceRetranslate.insert(p)
+                forceReextract.insert(p)
+                completedPages.remove(p)
+                if status[p] != .extracting { status[p] = .idle }
+                try? database?.setPageTranslationState(documentID: documentID, pageIndex: p, key: statusKey,
+                                                       state: .failed, error: Self.pendingRetranslateMarker)
+            }
+        }
         whole = WholeJob(range: range, isPaused: false)
         persistWhole()
         blockedMessage = nil
@@ -388,11 +421,15 @@ final class TranslationCoordinator {
     }
 
     private func process(first: Int) async {
-        // 1. 確保有文字（本頁與可合併的相鄰頁）
+        // 1. 確保有文字（本頁與可合併的相鄰頁）；整份重新翻譯時先以最新版面規則重新辨識
         do {
-            try await extractIfNeeded(first)
-            for c in [first + 1, first + 2, first - 1] where queue[c] != nil && blocks[c] == nil {
-                _ = try? await extractIfNeeded(c)
+            try await extractIfNeeded(first, force: forceReextract.remove(first) != nil)
+            for c in [first + 1, first + 2, first - 1] where queue[c] != nil {
+                if forceReextract.remove(c) != nil {
+                    _ = try? await extractIfNeeded(c, force: true)
+                } else if blocks[c] == nil {
+                    _ = try? await extractIfNeeded(c)
+                }
             }
         } catch {
             queue.removeValue(forKey: first)

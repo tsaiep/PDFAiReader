@@ -111,6 +111,50 @@ final class ServicesTests: XCTestCase {
         print("OCR 單頁耗時：\(String(format: "%.2f", page.duration)) 秒，區塊 \(page.blocks.count)")
     }
 
+    /// 掃描頁上字級相同的粗體小標題，應該獨立成段並判定為標題。
+    func testOCRDetectsBoldSubheading() async throws {
+        let size = CGSize(width: 595, height: 842)
+        let scale: CGFloat = 2.5
+        let bmp = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale),
+                            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        bmp.setFillColor(CGColor(gray: 0.98, alpha: 1))
+        bmp.fill(CGRect(x: 0, y: 0, width: size.width * scale, height: size.height * scale))
+        bmp.scaleBy(x: scale, y: scale)
+        bmp.textMatrix = .identity
+        func draw(_ text: String, font: String, rect: CGRect) {
+            let attr = CFAttributedStringCreate(nil, text as CFString, [
+                kCTFontAttributeName: CTFontCreateWithName(font as CFString, 13, nil)] as CFDictionary)!
+            CTFrameDraw(CTFramesetterCreateFrame(CTFramesetterCreateWithAttributedString(attr), CFRange(location: 0, length: 0),
+                                                 CGPath(rect: rect, transform: nil), nil), bmp)
+        }
+        draw(Self.paragraph1, font: "Times-Roman", rect: CGRect(x: 60, y: 640, width: 475, height: 120))
+        draw("Notes on Scale", font: "Times-Bold", rect: CGRect(x: 60, y: 600, width: 475, height: 20))
+        draw(Self.paragraph2, font: "Times-Roman", rect: CGRect(x: 60, y: 480, width: 475, height: 120))
+        let url = tmp.appendingPathComponent("bold.pdf")
+        var box = CGRect(origin: .zero, size: size)
+        let ctx = CGContext(url as CFURL, mediaBox: &box, nil)!
+        ctx.beginPDFPage(nil)
+        ctx.draw(bmp.makeImage()!, in: box)
+        ctx.endPDFPage()
+        ctx.closePDF()
+
+        let page = try await TextExtractor(url: url, documentID: "doc").extract(pageIndex: 0)
+        let texts = page.blocks.map { "[\($0.kind.rawValue)] \($0.text)" }
+        XCTAssertTrue(page.blocks.contains { $0.kind == .heading && $0.text == "Notes on Scale" }, texts.description)
+        XCTAssertTrue(page.blocks.contains { $0.text.hasPrefix("The deadpan") }, texts.description)
+    }
+
+    func testHeadingUsesBoldFace() {
+        let regular = TranslatedPDFExporter.font(kind: .paragraph, size: 14, family: "PingFang TC")
+        let heading = TranslatedPDFExporter.font(kind: .heading, size: 14, family: "PingFang TC")
+        let name = CTFontCopyPostScriptName(heading) as String
+        XCTAssertNotEqual(CTFontCopyPostScriptName(regular) as String, name)
+        XCTAssertTrue(name.contains("Semibold") || name.contains("Bold") || name.contains("Medium"), name)
+        // 沒有粗體成員的字體：維持原字體，不崩潰
+        _ = TranslatedPDFExporter.font(kind: .heading, size: 14, family: "NoSuchFamily")
+    }
+
     // MARK: - 匯出
 
     private func exportBlocks(from url: URL) async throws -> [Int: [ExportBlock]] {

@@ -94,7 +94,7 @@ struct ReaderCommands: Commands {
                 }
             }
             Divider()
-            Button(L("整份翻譯…", "Translate Whole Document…")) { app.reader?.activeSheet = .wholeTranslation }
+            Button(L("整份翻譯／重新翻譯…", "Translate or Retranslate Whole Document…")) { app.reader?.activeSheet = .wholeTranslation }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(app.reader == nil)
             Button(L("新增翻譯模型…", "Add Model…")) { app.showAddModel = true }

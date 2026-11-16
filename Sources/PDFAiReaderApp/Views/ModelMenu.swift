@@ -29,21 +29,30 @@ struct ModelMenuItems: View {
     @AppStorage("reasoningEffort") private var effort = "low"
 
     private var customModels: [String] {
-        customModelsRaw.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        let presetIDs = Set(ModelPreset.all.map(\.id))
+        return customModelsRaw.split(separator: "\n").map(String.init).filter { !$0.isEmpty && !presetIDs.contains($0) }
     }
 
     var body: some View {
         Section(L("翻譯模型", "Model")) {
-            Toggle(isOn: Binding(get: { model.isEmpty }, set: { if $0 { select("") } })) {
-                Text(L("預設", "Default") + "（\(app.configDefaultModel ?? L("Codex 設定檔", "Codex config"))）")
+            ForEach(ModelPreset.all) { preset in
+                Toggle(isOn: Binding(get: { model == preset.id }, set: { if $0 { select(preset.id) } })) {
+                    Text(preset.title + "　" + preset.subtitle)
+                }
             }
             ForEach(customModels, id: \.self) { m in
                 Toggle(m, isOn: Binding(get: { model == m }, set: { if $0 { select(m) } }))
+            }
+            Toggle(isOn: Binding(get: { model.isEmpty }, set: { if $0 { select("") } })) {
+                Text(L("Codex 設定檔的預設", "Codex config default") + "（\(app.configDefaultModel ?? "—")）")
             }
             Button(L("新增其他模型…", "Add Another Model…")) { app.showAddModel = true }
         }
         Section(L("速度／品質", "Speed / Quality")) {
             Picker(L("推理強度", "Reasoning effort"), selection: Binding(get: { effort }, set: { setEffort($0) })) {
+                if ModelPreset.supportsNoReasoning(model) {
+                    Text(L("最快（none，不推理）", "Fastest (none)")).tag("none")
+                }
                 Text(L("快速（low）", "Fast (low)")).tag("low")
                 Text(L("標準（medium）", "Standard (medium)")).tag("medium")
                 Text(L("精細（high，較慢）", "Thorough (high, slower)")).tag("high")
@@ -62,6 +71,29 @@ struct ModelMenuItems: View {
         effort = e
         Task { await app.applyStoredCodexSettings() }
     }
+}
+
+/// 內建的翻譯模型選項（ID 依 OpenAI 文件；仍可在「新增其他模型」輸入其他 ID）。
+struct ModelPreset: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+
+    static var all: [ModelPreset] {
+        [
+            ModelPreset(id: "gpt-6.1-terra", title: "GPT-6.1 Terra",
+                        subtitle: L("推薦：文筆自然、速度與額度平衡", "Recommended: natural prose, balanced speed and quota")),
+            ModelPreset(id: "gpt-6.1-sol", title: "GPT-6.1 Sol",
+                        subtitle: L("品質最高，較慢、較耗額度", "Highest quality, slower, uses more quota")),
+            ModelPreset(id: "gpt-6-luna", title: "GPT-6 Luna",
+                        subtitle: L("最快、最省，適合一般文件", "Fastest and cheapest, for plain documents")),
+        ]
+    }
+
+    static let recommended = "gpt-6.1-terra"
+
+    /// Luna 支援 reasoning effort = none；6.1 Sol 已取消 none。
+    static func supportsNoReasoning(_ model: String) -> Bool { model.contains("luna") }
 }
 
 /// 新增模型：輸入模型 ID、實際測試一次，成功後加入清單並使用。

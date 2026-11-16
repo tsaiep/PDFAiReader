@@ -63,6 +63,14 @@ final class AppModel {
         })
 
         configDefaultModel = Self.readConfigDefaultModel()
+        // 第一次使用模型預設選項：翻譯預設改用 Terra（使用者自己選過模型則不更動）
+        let defaults = UserDefaults.standard
+        if !defaults.bool(forKey: "modelPresetsIntroduced") {
+            if (defaults.string(forKey: "codexModel") ?? "").isEmpty {
+                defaults.set(ModelPreset.recommended, forKey: "codexModel")
+            }
+            defaults.set(true, forKey: "modelPresetsIntroduced")
+        }
         Task { await applyStoredCodexSettings() }
     }
 
@@ -164,7 +172,10 @@ final class AppModel {
 
     func applyCodexSettings(path: String, model: String) async {
         let effort = UserDefaults.standard.string(forKey: "reasoningEffort") ?? "low"
-        let safeEffort = ["low", "medium", "high"].contains(effort) ? effort : "low"
+        let modelID = model.trimmingCharacters(in: .whitespaces)
+        var safeEffort = ["none", "low", "medium", "high"].contains(effort) ? effort : "low"
+        // none 只有部分模型支援（例如 Luna），其他模型改用 low
+        if safeEffort == "none" && !ModelPreset.supportsNoReasoning(modelID) { safeEffort = "low" }
         let config = CodexConfiguration(
             executablePath: path.trimmingCharacters(in: .whitespaces).isEmpty ? nil : path,
             defaultModel: model.trimmingCharacters(in: .whitespaces).isEmpty ? nil : model,

@@ -105,6 +105,9 @@ private struct TranslationOptionsMenu: View {
     var body: some View {
         Menu {
             Button(L("翻譯目前頁面", "Translate Current Page")) { coordinator.translateFocusPages() }
+            Button(L("重新辨識並翻譯目前頁面", "Re-recognize & Retranslate Current Pages")) {
+                coordinator.reExtractFocusPages()
+            }
             Button(L("翻譯選取文字", "Translate Selection")) { reader.translateCurrentSelection() }
                 .disabled(!reader.hasSelection)
             Toggle(L("閱讀時自動翻譯（目前頁＋\(coordinator.prefetchCount) 頁）",
@@ -115,7 +118,7 @@ private struct TranslationOptionsMenu: View {
             FontMenu()
             Menu(L("翻譯模型與品質", "Model & Quality")) { ModelMenuItems(reader: reader) }
             Divider()
-            Button(L("整份翻譯…", "Translate Whole Document…")) { reader.activeSheet = .wholeTranslation }
+            Button(L("整份翻譯／重新翻譯…", "Translate or Retranslate Whole Document…")) { reader.activeSheet = .wholeTranslation }
             Button(L("匯出翻譯 PDF…", "Export Translated PDF…")) { reader.activeSheet = .export }
             Divider()
             Button(reader.showTranslationPanel ? L("隱藏翻譯側欄", "Hide Translation Sidebar")

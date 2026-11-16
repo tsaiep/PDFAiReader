@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import PDFKit
 import CoreGraphics
 import CoreText
@@ -180,9 +181,32 @@ public enum TranslatedPDFExporter {
 
     /// 以字體家族建立字型；標題使用粗體（該字體無粗體時維持原字重）。
     static func font(kind: BlockKind, size: CGFloat, family: String) -> CTFont {
-        let base = CTFontCreateWithName(family as CFString, size, nil)
-        guard kind == .heading else { return base }
-        return CTFontCreateCopyWithSymbolicTraits(base, size, nil, .traitBold, .traitBold) ?? base
+        guard kind == .heading, let bold = boldFontName(family: family) else {
+            return CTFontCreateWithName(family as CFString, size, nil)
+        }
+        return CTFontCreateWithName(bold as CFString, size, nil)
+    }
+
+    nonisolated(unsafe) private static var boldNames: [String: String?] = [:]
+    private static let boldLock = NSLock()
+
+    /// 從字體家族成員中挑粗體（Bold 優先，其次 Semibold／Heavy），例如蘋方 → PingFangTC-Semibold。
+    static func boldFontName(family: String) -> String? {
+        boldLock.lock()
+        defer { boldLock.unlock() }
+        if let cached = boldNames[family] { return cached }
+        // availableMembers：[PostScript 名稱, 樣式名稱, 字重(0–15，5 = Regular，9 = Bold), traits]
+        let members = NSFontManager.shared.availableMembers(ofFontFamily: family) ?? []
+        let candidates: [(name: String, weight: Int)] = members.compactMap { m in
+            guard m.count >= 3, let name = m[0] as? String, let weight = (m[2] as? NSNumber)?.intValue else { return nil }
+            let traits = (m.count >= 4 ? (m[3] as? NSNumber)?.uintValue : 0) ?? 0
+            let italic = traits & NSFontTraitMask.italicFontMask.rawValue != 0
+            return italic ? nil : (name, weight)
+        }
+        // 最接近 Bold（9），但至少要比 Regular 粗
+        let best = candidates.filter { $0.weight >= 7 }.min { abs($0.weight - 9) < abs($1.weight - 9) }?.name
+        boldNames[family] = best
+        return best
     }
 
     static func attributed(_ text: String, kind: BlockKind, size: CGFloat,

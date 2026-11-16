@@ -12,6 +12,8 @@ struct WholeTranslationSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var useRange = false
+    /// true = 全部重新翻譯（重新辨識版面），false = 只翻譯尚未翻譯的頁面
+    @State var retranslateAll = false
     @State private var fromText = "1"
     @State private var toText = ""
 
@@ -23,6 +25,7 @@ struct WholeTranslationSheet: View {
 
     private var remaining: Int {
         guard let range else { return 0 }
+        if retranslateAll { return range.count }
         return range.filter { !coordinator.completedPages.contains($0) }.count
     }
 
@@ -34,6 +37,11 @@ struct WholeTranslationSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             Form {
+                Picker(L("翻譯方式", "Mode"), selection: $retranslateAll) {
+                    Text(L("只翻譯尚未翻譯的頁面", "Translate untranslated pages only")).tag(false)
+                    Text(L("全部重新翻譯（以最新版面規則重新辨識文字）", "Retranslate everything (re-recognize text with the latest layout rules)")).tag(true)
+                }
+                .pickerStyle(.radioGroup)
                 Picker(L("範圍", "Range"), selection: $useRange) {
                     Text(L("全部 \(reader.pageCount) 頁", "All \(reader.pageCount) pages")).tag(false)
                     Text(L("指定頁碼", "Page range")).tag(true)
@@ -52,7 +60,12 @@ struct WholeTranslationSheet: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 4) {
                     if let range {
-                        Text(L("範圍內共 \(range.count) 頁，已完成 \(range.count - remaining) 頁，需翻譯 \(remaining) 頁", "\(range.count) pages in range, \(range.count - remaining) done, \(remaining) to translate"))
+                        if retranslateAll {
+                            Text(L("範圍內 \(range.count) 頁將全部重新辨識並重新翻譯；處理到某頁時，該頁會暫時顯示原文，完成後換成新譯文。",
+                                   "All \(range.count) pages in range will be re-recognized and retranslated. Each page briefly shows the original while it is being redone."))
+                        } else {
+                            Text(L("範圍內共 \(range.count) 頁，已完成 \(range.count - remaining) 頁，需翻譯 \(remaining) 頁", "\(range.count) pages in range, \(range.count - remaining) done, \(remaining) to translate"))
+                        }
                         let calls = Int((Double(remaining) / 2.5).rounded(.up))
                         Text(L("預估約 \(calls) 次 Codex 呼叫，每次約 12–20 秒（實際依頁面字數而定）", "About \(calls) Codex calls, roughly 12–20 seconds each (depends on page length)"))
                             .foregroundStyle(.secondary)
@@ -69,8 +82,8 @@ struct WholeTranslationSheet: View {
             HStack {
                 Spacer()
                 Button(L("取消", "Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(L("開始翻譯", "Start")) {
-                    if let range { coordinator.startWhole(range: range) }
+                Button(retranslateAll ? L("開始重新翻譯", "Start Retranslation") : L("開始翻譯", "Start")) {
+                    if let range { coordinator.startWhole(range: range, retranslate: retranslateAll) }
                     reader.showTranslationPanel = true
                     dismiss()
                 }

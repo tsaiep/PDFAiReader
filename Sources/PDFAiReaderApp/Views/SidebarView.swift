@@ -154,6 +154,10 @@ private struct ThumbnailCell: View {
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .onTapGesture { reader.goTo(pageIndex: index) }
+        .contextMenu {
+            Button(L("翻譯此頁", "Translate Page")) { coordinator.translatePages([index]) }
+            Button(L("重新辨識並翻譯此頁", "Re-recognize & Retranslate Page")) { coordinator.reExtract(index) }
+        }
         .help(badgeHelp)
         .task(id: renderer == nil ? -1 : index) {
             guard let renderer, image == nil else { return }
