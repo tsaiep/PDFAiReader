@@ -88,7 +88,8 @@ final class StickyNoteView: NSView, NSTextViewDelegate {
         let shadow = NSShadow()
         shadow.shadowColor = NSColor.black.withAlphaComponent(0.22)
         shadow.shadowBlurRadius = 4
-        shadow.shadowOffset = NSSize(width: 0, height: -1.5)
+        // 便利貼視圖是翻轉座標（原點左上），往下的投影要用正值
+        shadow.shadowOffset = NSSize(width: 0, height: 2)
         self.shadow = shadow
 
         textView.delegate = self

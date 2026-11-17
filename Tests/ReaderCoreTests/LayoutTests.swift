@@ -213,3 +213,41 @@ final class TextFlowTests: XCTestCase {
         XCTAssertEqual(TextCorrespondence.map(0..<src.count, from: src, to: dst), 0..<dst.count)
     }
 }
+
+final class ListLayoutTests: XCTestCase {
+    private func line(_ t: String, x: Double, top: Double, w: Double = 400) -> TextLine {
+        TextLine(text: t, bounds: PageRect(x: x, y: top - 12, width: w, height: 12))
+    }
+
+    func testBulletsAndIndentedParagraphsStaySeparate() {
+        let lines = [
+            line("所有的图像，都由一个情节和若干视觉元素组成，当然有时候也包含听觉成分。", x: 64, top: 700, w: 380),
+            line("图像的含义只有在这三者的共同作用下，才能有效传递。广告中的图像是为了说服观", x: 40, top: 682),
+            line("众购买产品，电脑游戏中的图像是为了吸引玩家，电影中的图像则是为了打动观影者。", x: 40, top: 664),
+            line("图像，可以被分解为三大基本成分：", x: 64, top: 646, w: 180),
+            line("• 情节：由戏剧冲突、人物和对话组成；", x: 50, top: 628, w: 220),
+            line("• 声音：由对话、音效和音乐组成；", x: 50, top: 610, w: 200),
+            line("• 视觉：视觉由什么组成呢？布景？道具？服装？以上这三个答案显然都太简", x: 50, top: 592, w: 390),
+            line("单。组成视觉成分的是基本视觉元素。", x: 64, top: 574, w: 220),
+        ]
+        let r = LayoutAnalyzer().analyze(lines: lines, pageBounds: PageRect(x: 0, y: 0, width: 480, height: 760),
+                                         documentID: "d", pageIndex: 0, source: .embedded)
+        XCTAssertEqual(r.blocks.count, 5, r.blocks.map(\.text).joined(separator: " | "))
+        XCTAssertTrue(r.blocks[1].text.hasPrefix("图像，可以"))
+        XCTAssertTrue(r.blocks[2].text.hasPrefix("• 情节"))
+        XCTAssertTrue(r.blocks[4].text.hasSuffix("基本视觉元素。"))
+        XCTAssertFalse(LayoutAnalyzer.needsRelayout(r.blocks))
+        var merged = r.blocks[1]
+        merged.text = "图像，可以被分解为三大基本成分：• 情节：由戏剧冲突组成；• 声音：由对话组成"
+        XCTAssertTrue(LayoutAnalyzer.needsRelayout([merged]))
+    }
+
+    func testListMarkers() {
+        for t in ["• 情节", "1. First", "2) Second", "(3) 三", "（一）概述", "一、緒論", "① 甲", "- item"] {
+            XCTAssertTrue(LayoutAnalyzer.isListItemStart(t), t)
+        }
+        for t in ["1.2 基本视觉元素", "2014年出版", "布鲁斯·布洛克", "-5 度"] {
+            XCTAssertFalse(LayoutAnalyzer.isListItemStart(t), t)
+        }
+    }
+}

@@ -44,6 +44,7 @@ public struct LayoutAnalyzer: Sendable {
             if let last = groups.last?.last,
                Self.continuesParagraph(prev: last, next: item.line, medianHeight: medianHeight,
                                        prevGroupCount: groups[groups.count - 1].count,
+                                       groupFirst: groups[groups.count - 1].first,
                                        columnWidth: Self.columnWidth(for: item.line, lines: lines, split: split,
                                                                      fallback: medianWidth)),
                groups[groups.count - 1].count < 200,
@@ -170,10 +171,46 @@ public struct LayoutAnalyzer: Sendable {
             || (first.value >= 0x3400 && first.value <= 0x9FFF)
     }
 
+    /// 行首是項目符號或編號（條列項目的第一行）。
+    static func isListItemStart(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        guard let first = t.first else { return false }
+        if "•●○◦▪■□◆◇▶►▸‣⁃∙✓✔☐☑".contains(first) { return true }
+        // 「- 」「* 」「– 」
+        if "-*–—".contains(first), t.dropFirst().first == " " { return true }
+        // ①–⑳、㈠…
+        if let v = first.unicodeScalars.first?.value, (0x2460...0x2473).contains(v) || (0x3220...0x3229).contains(v) { return true }
+        // 1. 1) 1、 (1) （1） 一、 （一）
+        let patterns = [#"^\d{1,2}[\.\)、）](?:\s|[^\d\.\s])"#, #"^[\(（]\s*[\d一二三四五六七八九十]{1,3}\s*[\)）]"#,
+                        #"^[一二三四五六七八九十]{1,3}、"#, #"^[a-zA-Z][\.\)]\s"#]
+        return patterns.contains { t.range(of: $0, options: .regularExpression) != nil }
+    }
+
+    /// 已存的段落是用舊規則切的（條列項目被併進同一段）：需要重新分析版面。
+    public static func needsRelayout(_ blocks: [TextBlock]) -> Bool {
+        blocks.contains { b in
+            b.text.range(of: #"[：:；;。.!?！？]\s*[•●○◦▪■◆▶►‣⁃∙]"#, options: .regularExpression) != nil
+                || b.text.range(of: #"\s[•●○◦▪■◆▶►‣⁃∙]\s"#, options: .regularExpression) != nil
+        }
+    }
+
     static func continuesParagraph(prev: TextLine, next: TextLine, medianHeight: Double,
-                                   prevGroupCount: Int = 2, columnWidth: Double = 0) -> Bool {
+                                   prevGroupCount: Int = 2, groupFirst: TextLine? = nil,
+                                   columnWidth: Double = 0) -> Bool {
         // 粗體與一般字不同段（字級相同的小標題）
         if prev.isBold != next.isBold { return false }
+        // 條列：每個項目自成一段（譯文才能保留換行與項目符號）
+        if isListItemStart(next.text) { return false }
+        let lineH = max(prev.bounds.height, next.bounds.height, medianHeight * 0.5)
+        let inList = groupFirst.map { isListItemStart($0.text) } ?? isListItemStart(prev.text)
+        if inList {
+            // 項目的續行通常縮排對齊項目文字；退回比項目符號更左邊＝條列結束
+            if let first = groupFirst, next.bounds.minX < first.bounds.minX - lineH * 0.4 { return false }
+        } else if let last = prev.text.trimmingCharacters(in: .whitespaces).last, "。！？.!?：:;；”\"」』".contains(last),
+                  next.bounds.minX - prev.bounds.minX > lineH * 1.2 {
+            // 首行縮排：上一句已結束，下一行明顯往右縮 → 新段落
+            return false
+        }
         let width = columnWidth > 0 ? columnWidth : max(prev.bounds.width, next.bounds.width)
         // 小標題之前：上一行句子已結束，這一行是像標題的短行 → 斷開（小標題上方間距很小時也能分開）
         if endsSentence(prev.text), isTitleLike(next, columnWidth: width) {

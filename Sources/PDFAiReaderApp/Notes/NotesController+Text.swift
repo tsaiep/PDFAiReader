@@ -485,6 +485,23 @@ extension NotesController {
         onChange?(highlights[i].pageIndex)
     }
 
+    /// 重新分析版面後區塊編號可能改變：在同一種文字裡找回標記的那段文字，重新定錨。
+    func resolved(_ span: HighlightSpan, page index: Int) -> HighlightSpan {
+        guard let flow = flow(index, side: span.side) else { return span }
+        if let b = flow.block(id: span.blockID), b.text == span.source { return span }
+        let src = Array(span.source)
+        let lo = max(0, min(span.start, src.count)), hi = max(lo, min(span.end, src.count))
+        let snippet = String(src[lo..<hi])
+        guard snippet.count >= 2 else { return span }
+        for b in flow.blocks {
+            let text = b.text
+            guard let r = text.range(of: snippet) else { continue }
+            let start = text.distance(from: text.startIndex, to: r.lowerBound)
+            return HighlightSpan(blockID: b.id, side: span.side, start: start, end: start + snippet.count, source: text)
+        }
+        return span
+    }
+
     /// 錨點換算到某種文字的字元範圍。同一邊且文字沒變就直接用；否則以句子對齊換算。
     func mappedRange(_ span: HighlightSpan, to target: TextFlow.Block, side: TextSide) -> Range<Int> {
         if span.side == side, span.source == target.text {
@@ -497,7 +514,7 @@ extension NotesController {
     func originalDisplayRects(for h: Highlight, page index: Int) -> [CGRect] {
         guard let flow = originalFlow(index) else { return [] }
         var out: [CGRect] = []
-        for span in h.spans {
+        for span in h.spans.map({ resolved($0, page: index) }) {
             guard let b = flow.block(id: span.blockID) else { continue }
             out += flow.rects(for: .init(blockID: b.id, range: mappedRange(span, to: b, side: .original)))
         }
@@ -515,7 +532,7 @@ extension NotesController {
         let oflow = originalFlow(index)
         var out: [CGRect] = []
         var usedStored = false
-        for span in h.spans {
+        for span in h.spans.map({ resolved($0, page: index) }) {
             // 顯示譯文時，有譯文的區塊標在譯文上；沒有譯文的區塊照原文
             if let tf = tflow, let b = tf.block(id: span.blockID) {
                 out += tf.rects(for: .init(blockID: b.id, range: mappedRange(span, to: b, side: .translated)))

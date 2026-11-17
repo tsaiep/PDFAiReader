@@ -87,6 +87,8 @@ final class TranslationCoordinator {
     @ObservationIgnored private var queue: [Int: JobPriority] = [:]
     @ObservationIgnored private var forceRetranslate: Set<Int> = []
     @ObservationIgnored private var forceReextract: Set<Int> = []
+    /// 本次開啟已自動重新分析版面的頁面（避免重複）。
+    @ObservationIgnored private var relayoutRepaired: Set<Int> = []
     @ObservationIgnored private var worker: Task<Void, Never>?
     @ObservationIgnored private var extractionTasks: [Int: Task<[TextBlock], Error>] = [:]
     @ObservationIgnored private var selectionTask: Task<Void, Never>?
@@ -234,6 +236,20 @@ final class TranslationCoordinator {
         if translations[page] == nil {
             translations[page] = (try? db.latestTranslations(documentID: documentID, pageIndex: page,
                                                             targetLanguage: targetLanguage.rawValue)) ?? [:]
+        }
+        // 舊版面規則把條列項目併成一段：自動以新規則重新分析。已翻譯的頁面接著重新翻譯
+        // （只有文字變動的段落會呼叫 AI）；沒翻譯過的只重新分析，不會自動花費翻譯。
+        if let b = blocks[page], !relayoutRepaired.contains(page), LayoutAnalyzer.needsRelayout(b) {
+            relayoutRepaired.insert(page)
+            let translated = !(translations[page] ?? [:]).isEmpty
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if translated {
+                    self.reExtract([page])
+                } else {
+                    Task { _ = try? await self.extractIfNeeded(page, force: true) }
+                }
+            }
         }
     }
 
