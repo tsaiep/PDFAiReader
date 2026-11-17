@@ -150,3 +150,66 @@ final class LayoutTests: XCTestCase {
                           TranslationCacheKey(engine: "e", model: "b").fingerprint)
     }
 }
+
+final class ScanSelectionTests: XCTestCase {
+    private let lines = [
+        TextLine(text: "一二三四五六七八九十", bounds: PageRect(x: 100, y: 700, width: 200, height: 20)),
+        TextLine(text: "甲乙丙丁戊己庚辛壬癸", bounds: PageRect(x: 100, y: 670, width: 200, height: 20)),
+        TextLine(text: "子丑寅卯辰巳午未申酉", bounds: PageRect(x: 100, y: 640, width: 200, height: 20)),
+        TextLine(text: "Right column text", bounds: PageRect(x: 400, y: 670, width: 150, height: 20)),
+    ]
+
+    func testFlowsAcrossLinesLikeText() {
+        let p = ScanSelection.pieces(lines: lines, from: CGPoint(x: 160, y: 710), to: CGPoint(x: 181, y: 650))
+        XCTAssertEqual(p.count, 3)
+        XCTAssertEqual(p[0].text, "四五六七八九十")
+        XCTAssertEqual(p[1].text, "甲乙丙丁戊己庚辛壬癸")
+        XCTAssertEqual(p[2].text, "子丑寅卯")
+        XCTAssertEqual(ScanSelection.text(of: p), "四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯")
+        XCTAssertEqual(p[0].rect.minX, 160, accuracy: 0.01)
+        XCTAssertEqual(p[0].rect.maxX, 300, accuracy: 0.01)
+    }
+
+    func testBackwardDragAndSingleLine() {
+        let back = ScanSelection.pieces(lines: lines, from: CGPoint(x: 181, y: 650), to: CGPoint(x: 160, y: 710))
+        XCTAssertEqual(back.map(\.text), ["四五六七八九十", "甲乙丙丁戊己庚辛壬癸", "子丑寅卯"])
+        let one = ScanSelection.pieces(lines: lines, from: CGPoint(x: 141, y: 680), to: CGPoint(x: 199, y: 678))
+        XCTAssertEqual(one.map(\.text), ["丙丁戊"])
+    }
+
+    func testFarFromTextSelectsNothing() {
+        XCTAssertTrue(ScanSelection.pieces(lines: lines, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 300, y: 120)).isEmpty)
+    }
+}
+
+final class TextFlowTests: XCTestCase {
+    private func block(_ id: String, _ text: String, x: CGFloat, top: CGFloat, perLine: Int, w: CGFloat = 10, h: CGFloat = 12) -> TextFlow.Block {
+        let chars = Array(text)
+        let rects = chars.indices.map { i in
+            CGRect(x: x + CGFloat(i % perLine) * w, y: top - CGFloat(i / perLine + 1) * (h + 4), width: w, height: h)
+        }
+        return TextFlow.Block(id: id, chars: chars, rects: rects)
+    }
+
+    func testSelectionAcrossBlocksAndLines() {
+        let flow = TextFlow(blocks: [block("a", "一二三四五六七八九十", x: 0, top: 500, perLine: 5),
+                                     block("b", "甲乙丙丁戊", x: 0, top: 440, perLine: 5)])
+        let s = flow.position(at: CGPoint(x: 22, y: 490))!          // 「三」的左半 → 第 2 個間隙
+        let e = flow.position(at: CGPoint(x: 31, y: 430))!          // 「丁」的中心偏左 → 第 3 個間隙
+        let spans = flow.spans(from: e, to: s)                     // 反向拖曳也一樣
+        XCTAssertEqual(spans, [.init(blockID: "a", range: 2..<10), .init(blockID: "b", range: 0..<3)])
+        XCTAssertEqual(flow.text(for: spans), "三四五六七八九十甲乙丙")
+        XCTAssertEqual(flow.rects(for: spans[0]).count, 2)         // 兩行
+    }
+
+    func testCorrespondenceBySentence() {
+        let src = Array("第一句很短。第二句比較長一點。第三句。")
+        let dst = Array("First. The second sentence is longer. Third.")
+        // 原文第二句 → 譯文第二句
+        let second = 6..<15
+        let mapped = TextCorrespondence.map(second, from: src, to: dst)
+        XCTAssertEqual(String(dst[mapped]).trimmingCharacters(in: .whitespaces), "The second sentence is longer.")
+        // 整段 → 整段
+        XCTAssertEqual(TextCorrespondence.map(0..<src.count, from: src, to: dst), 0..<dst.count)
+    }
+}

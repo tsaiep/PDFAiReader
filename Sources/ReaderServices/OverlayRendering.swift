@@ -24,17 +24,26 @@ public struct OverlayStyle: Sendable, Equatable {
     public var background: RGBColor
     public var fontSize: CGFloat
     public var fontFamily: String
+
+    public init(background: RGBColor, fontSize: CGFloat, fontFamily: String) {
+        self.background = background
+        self.fontSize = fontSize
+        self.fontFamily = fontFamily
+    }
 }
 
 public struct OverlayItem: Sendable {
     public var bounds: PageRect
     public var kind: BlockKind
     public var text: String
+    /// 對應的原文區塊 ID（螢光筆在原文／譯文間換算用）。
+    public var blockID: String
 
-    public init(bounds: PageRect, kind: BlockKind, text: String) {
+    public init(bounds: PageRect, kind: BlockKind, text: String, blockID: String = "") {
         self.bounds = bounds
         self.kind = kind
         self.text = text
+        self.blockID = blockID
     }
 }
 
@@ -90,6 +99,51 @@ public enum OverlayRenderer {
         TranslatedPDFExporter.drawText(ctx: ctx, text: item.text, kind: item.kind, size: style.fontSize,
                                        rect: rect, color: ink, family: style.fontFamily)
         ctx.restoreGState()
+    }
+}
+
+extension OverlayRenderer {
+    /// 譯文每個字元在顯示空間的位置，與 `draw` 的排版完全相同（選取與螢光筆用）。
+    /// 回傳的陣列與 `Array(item.text)` 一一對應；沒有排進框內的字元為 `.null`。
+    public static func characterRects(item: OverlayItem, style: OverlayStyle, geometry: PageGeometry) -> [CGRect] {
+        let rect = displayRect(item.bounds, geometry: geometry)
+        let chars = Array(item.text)
+        var result = [CGRect](repeating: .null, count: chars.count)
+        guard !chars.isEmpty else { return result }
+        let attr = TranslatedPDFExporter.attributed(item.text, kind: item.kind, size: style.fontSize, family: style.fontFamily)
+        let fs = CTFramesetterCreateWithAttributedString(attr)
+        let frame = CTFramesetterCreateFrame(fs, CFRange(location: 0, length: 0), CGPath(rect: rect, transform: nil), nil)
+        guard let lines = CTFrameGetLines(frame) as? [CTLine], !lines.isEmpty else { return result }
+        var origins = [CGPoint](repeating: .zero, count: lines.count)
+        CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+
+        // UTF-16 位移 → 字元索引
+        var charAtUTF16: [Int] = []
+        charAtUTF16.reserveCapacity(item.text.utf16.count)
+        for (ci, c) in chars.enumerated() { for _ in 0..<String(c).utf16.count { charAtUTF16.append(ci) } }
+
+        let lineHeight = style.fontSize * 1.25
+        for (li, line) in lines.enumerated() {
+            let range = CTLineGetStringRange(line)
+            let origin = CGPoint(x: rect.minX + origins[li].x, y: rect.minY + origins[li].y)
+            var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+            _ = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+            // 行高與繪製時的固定行高一致，讓相鄰行的標記剛好相接
+            let extra = max(0, lineHeight - ascent - descent) / 2
+            let bottom = origin.y - descent - extra, height = ascent + descent + extra * 2
+            var u = range.location
+            while u < range.location + range.length, u < charAtUTF16.count {
+                let ci = charAtUTF16[u]
+                let len = String(chars[ci]).utf16.count
+                let x0 = CTLineGetOffsetForStringIndex(line, u, nil)
+                let x1 = CTLineGetOffsetForStringIndex(line, min(u + len, range.location + range.length), nil)
+                if !chars[ci].isNewline {
+                    result[ci] = CGRect(x: origin.x + min(x0, x1), y: bottom, width: max(0.5, abs(x1 - x0)), height: height)
+                }
+                u += len
+            }
+        }
+        return result
     }
 }
 

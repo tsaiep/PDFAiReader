@@ -10,6 +10,59 @@ final class ReaderPDFView: PDFView {
     var swipeHandler: ((Bool) -> Void)?
     var optionHandler: ((Bool) -> Void)?
     var translateSelectionHandler: ((String) -> Void)?
+    /// 右鍵選單的筆記與螢光筆項目（由閱讀模型提供）。
+    var extraMenuItems: ((NSEvent) -> [NSMenuItem])?
+    /// 放開滑鼠（螢光筆模式：選取後自動上色）。
+    var mouseUpHandler: (() -> Void)?
+    /// 掃描頁的文字選取：回傳 true 表示已處理（不交給 PDFKit）。
+    var scanMouseHandler: ((NSEvent, ScanMousePhase) -> Bool)?
+    /// 滑鼠移動（掃描頁游標）。
+    var mouseMovedHandler: ((NSEvent) -> Void)?
+    /// ⌘C：掃描頁選取的文字。
+    var scanCopyText: (() -> String?)?
+    /// 從側邊欄拖來的筆記放到頁面上（筆記 ID、視窗座標）。
+    var noteDropHandler: ((String, NSPoint) -> Bool)?
+
+    static let noteDragPrefix = "pdfaireader-note:"
+
+    private func draggedNoteID(_ info: NSDraggingInfo) -> String? {
+        guard let s = info.draggingPasteboard.string(forType: .string), s.hasPrefix(Self.noteDragPrefix) else { return nil }
+        return String(s.dropFirst(Self.noteDragPrefix.count))
+    }
+
+    /// PDFView 換文件時會重新註冊拖放類型（只剩檔案），每次都補上筆記拖放用的文字類型。
+    override func registerForDraggedTypes(_ newTypes: [NSPasteboard.PasteboardType]) {
+        super.registerForDraggedTypes(newTypes.contains(.string) ? newTypes : newTypes + [.string])
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggedNoteID(sender) != nil ? .move : super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggedNoteID(sender) != nil ? .move : super.draggingUpdated(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        draggedNoteID(sender) != nil ? true : super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let id = draggedNoteID(sender) { return noteDropHandler?(id, sender.draggingLocation) ?? false }
+        return super.performDragOperation(sender)
+    }
+
+    enum ScanMousePhase { case down, dragged, up }
+
+
+    @objc override func copy(_ sender: Any?) {
+        if let text = scanCopyText?(), !text.isEmpty {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return
+        }
+        super.copy(sender)
+    }
 
     override func keyDown(with event: NSEvent) {
         if keyHandler?(event) == true { return }
@@ -40,6 +93,12 @@ final class ReaderPDFView: PDFView {
             menu.insertItem(item, at: 0)
             menu.insertItem(.separator(), at: 1)
         }
+        if let extra = extraMenuItems?(event), !extra.isEmpty {
+            var at = menu.items.firstIndex { $0.isSeparatorItem }.map { $0 + 1 } ?? 0
+            if menu.items.isEmpty || at == 0 { at = 0 }
+            for item in extra { menu.insertItem(item, at: at); at += 1 }
+            menu.insertItem(.separator(), at: at)
+        }
         return menu
     }
 
@@ -69,6 +128,13 @@ struct PDFKitView: NSViewRepresentable {
             model?.showTranslationPanel = true
             model?.translation.translateSelection(text)
         }
+        view.extraMenuItems = { [weak model] event in model?.contextMenuItems(for: event) ?? [] }
+        view.mouseUpHandler = { [weak model] in model?.pdfMouseUp() }
+        view.scanMouseHandler = { [weak model] event, phase in model?.scanMouse(event, phase) ?? false }
+        view.mouseMovedHandler = { [weak model] event in model?.pdfMouseMoved(event) }
+        view.scanCopyText = { [weak model] in model?.notes.scanSelection?.text }
+        view.noteDropHandler = { [weak model] id, point in model?.dropNote(id, windowPoint: point) ?? false }
+        view.registerForDraggedTypes([.string])
 
         let center = NotificationCenter.default
         center.addObserver(context.coordinator, selector: #selector(Coordinator.pageChanged(_:)),
@@ -98,13 +164,86 @@ struct PDFKitView: NSViewRepresentable {
         @MainActor @objc func selectionChanged(_ note: Notification) { model.pdfViewSelectionChanged() }
 
         private var monitor: Any?
+        private var mouseCaptured = false
+
+        @MainActor
+        private func handleMouse(_ event: NSEvent, in view: PDFView) -> NSEvent? {
+            if event.type == .mouseMoved {
+                // PDFKit 處理完再設定游標，才不會被它蓋掉
+                if isOverPDF(event, view) {
+                    DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.model.pdfMouseMoved(event) } }
+                }
+                return event
+            }
+            // 右鍵（或 ⌃點按）在譯文或掃描頁上：PDFKit 會先選取底下原文的字，改由閱讀器自己顯示選單
+            let isContextClick = event.type == .rightMouseDown
+                || (event.type == .leftMouseDown && event.modifierFlags.contains(.control))
+            if isContextClick {
+                guard isOverPDF(event, view), model.ownsTextInteraction(event) else { return event }
+                if let window = view.window, window.firstResponder is NSText { window.makeFirstResponder(view) }
+                let menu = NSMenu()
+                for item in model.contextMenuItems(for: event) { menu.addItem(item) }
+                guard !menu.items.isEmpty else { return nil }
+                NSMenu.popUpContextMenu(menu, with: event, for: view)
+                return nil
+            }
+            // 點 PDF 區域：結束側邊欄或便利貼的文字輸入（游標不再閃）、取消側邊欄的選取外框
+            if event.type == .leftMouseDown || event.type == .rightMouseDown, isOverPDF(event, view) {
+                if let window = view.window, window.firstResponder is NSText { window.makeFirstResponder(view) }
+                if model.notes.focusedNoteID != nil { model.notes.focusedNoteID = nil }
+                if model.notes.sidebarEditingID != nil { model.notes.sidebarEditingID = nil }
+            }
+            switch event.type {
+            case .leftMouseDown:
+                mouseCaptured = false
+                guard isOverPDF(event, view) else { return event }
+                if model.scanMouse(event, .down) {
+                    mouseCaptured = true
+                    return nil
+                }
+                return event
+            case .leftMouseDragged:
+                guard mouseCaptured else { return event }
+                _ = model.scanMouse(event, .dragged)
+                return nil
+            case .leftMouseUp:
+                if mouseCaptured {
+                    mouseCaptured = false
+                    _ = model.scanMouse(event, .up)
+                    return nil
+                }
+                // PDFKit 原生選取：等它更新選取後再處理（螢光筆模式上色）
+                if isOverPDF(event, view) {
+                    DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.model.pdfMouseUp() } }
+                }
+                return event
+            default:
+                return event
+            }
+        }
+
+        /// 滑鼠在 PDF 頁面區域上，而且不是在便利貼上（便利貼自己處理拖曳與編輯）。
+        @MainActor
+        private func isOverPDF(_ event: NSEvent, _ view: PDFView) -> Bool {
+            let point = view.convert(event.locationInWindow, from: nil)
+            guard view.bounds.contains(point), let content = view.window?.contentView else { return false }
+            var hit = content.hitTest(event.locationInWindow)
+            guard let first = hit, first === view || first.isDescendant(of: view) else { return false }
+            while let h = hit {
+                if h is StickyNoteView || h is NSText { return false }
+                hit = h.superview
+            }
+            return true
+        }
 
         /// 觸控板捲動事件是送到 PDFView 內部的捲動視圖，不會經過 PDFView 本身；
         /// 因此用 App 層級的事件監聽先攔截，交給閱讀模型處理翻頁，未處理的才放行。
         @MainActor
         func installEventMonitor(for view: PDFView) {
             removeEventMonitor()
-            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .swipe, .keyDown, .flagsChanged]) {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .swipe, .keyDown, .flagsChanged,
+                                                                  .leftMouseDown, .leftMouseDragged, .leftMouseUp, .mouseMoved,
+                                                                  .rightMouseDown]) {
                 [weak self, weak view] event in
                 guard let self, let view, let window = view.window, event.window === window else { return event }
                 switch event.type {
@@ -122,10 +261,16 @@ struct PDFKitView: NSViewRepresentable {
                     // 只在焦點位於 PDF 區域時處理（輸入框打字不受影響）
                     guard let responder = window.firstResponder as? NSView,
                           responder === view || responder.isDescendant(of: view) else { return event }
+                    // 便利貼編輯中：按鍵交給文字視圖
+                    if responder is NSText { return event }
                     return self.model.handleKey(event) ? nil : event
                 case .flagsChanged:
                     self.model.setPeekingOriginal(event.modifierFlags.contains(.option))
                     return event
+                case .leftMouseDown, .leftMouseDragged, .leftMouseUp, .mouseMoved, .rightMouseDown:
+                    // 滑鼠事件實際送到 PDFKit 內部的文件視圖，PDFView 子類別的 mouseDown 不一定會被呼叫；
+                    // 因此在這裡先攔截：譯文上的選取、掃描頁的選取由閱讀器處理，不讓 PDFKit 選到底下的原文。
+                    return self.handleMouse(event, in: view)
                 default:
                     return event
                 }
@@ -171,9 +316,10 @@ final class PageRenderCache: @unchecked Sendable {
     private var inflight: Set<String> = []
     private let capacity = 10
 
-    static func key(index: Int, longSide: CGFloat, overlays: [OverlayDrawing]) -> String {
+    static func key(index: Int, longSide: CGFloat, overlays: [OverlayDrawing], decorations: PageDecorations) -> String {
         var h = Hasher()
         for o in overlays { h.combine(o.item.text); h.combine(o.style.fontSize); h.combine(o.style.fontFamily) }
+        h.combine(decorations.signature)
         return "\(index)-\(Int(longSide / 40))-\(overlays.count)-\(h.finalize())"
     }
 
@@ -193,8 +339,9 @@ final class PageRenderCache: @unchecked Sendable {
         while order.count > capacity { cache.removeValue(forKey: order.removeFirst()) }
     }
 
-    func prepare(page: PDFPage, index: Int, longSide: CGFloat, overlays: [OverlayDrawing]) {
-        let key = Self.key(index: index, longSide: longSide, overlays: overlays)
+    func prepare(page: PDFPage, index: Int, longSide: CGFloat, overlays: [OverlayDrawing],
+                 decorations: PageDecorations = PageDecorations()) {
+        let key = Self.key(index: index, longSide: longSide, overlays: overlays, decorations: decorations)
         lock.lock()
         let skip = (cache[index]?.key == key) || inflight.contains(key)
         if !skip { inflight.insert(key) }
@@ -202,25 +349,28 @@ final class PageRenderCache: @unchecked Sendable {
         guard !skip, let ref = page.pageRef else { return }
         let geometry = PageGeometry(cropBox: page.bounds(for: .cropBox), rotation: page.rotation)
         queue.async { [weak self] in
-            let image = Self.render(ref: ref, geometry: geometry, longSide: longSide, overlays: overlays)
+            let image = Self.render(ref: ref, geometry: geometry, longSide: longSide, overlays: overlays,
+                                    decorations: decorations)
             self?.store(index, key, image)
         }
     }
 
     /// 取得頁面影像；沒有快取時同步渲染（主執行緒）。
-    func image(page: PDFPage, index: Int, longSide: CGFloat, overlays: [OverlayDrawing]) -> CGImage? {
-        let key = Self.key(index: index, longSide: longSide, overlays: overlays)
+    func image(page: PDFPage, index: Int, longSide: CGFloat, overlays: [OverlayDrawing],
+               decorations: PageDecorations = PageDecorations()) -> CGImage? {
+        let key = Self.key(index: index, longSide: longSide, overlays: overlays, decorations: decorations)
         if let hit = cached(index, key) { return hit }
         guard let ref = page.pageRef else { return nil }
         let geometry = PageGeometry(cropBox: page.bounds(for: .cropBox), rotation: page.rotation)
         // 同步渲染用較低解析度，避免卡住動畫開始
-        let image = Self.render(ref: ref, geometry: geometry, longSide: min(longSide, 1400), overlays: overlays)
+        let image = Self.render(ref: ref, geometry: geometry, longSide: min(longSide, 1400), overlays: overlays,
+                                decorations: decorations)
         store(index, key, image)
         return image
     }
 
     static func render(ref: CGPDFPage, geometry: PageGeometry, longSide: CGFloat,
-                       overlays: [OverlayDrawing]) -> CGImage? {
+                       overlays: [OverlayDrawing], decorations: PageDecorations = PageDecorations()) -> CGImage? {
         let size = geometry.displaySize
         let s = max(0.25, longSide / max(size.width, size.height))
         let w = Int((size.width * s).rounded()), h = Int((size.height * s).rounded())
@@ -237,6 +387,8 @@ final class PageRenderCache: @unchecked Sendable {
         for o in overlays {
             OverlayRenderer.drawInPageSpace(ctx, item: o.item, style: o.style, geometry: o.geometry)
         }
+        // 與畫面相同的層次：頁面 → 譯文 → 螢光筆（色彩增值）→ 便利貼
+        decorations.draw(in: ctx, geometry: geometry)
         return ctx.makeImage()
     }
 }

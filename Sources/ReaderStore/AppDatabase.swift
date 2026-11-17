@@ -177,6 +177,46 @@ public final class AppDatabase: Sendable {
             CREATE INDEX translations_block ON translations(blockID);
             """)
         }
+
+        migrator.registerMigration("v3-notes-highlights") { db in
+            try db.execute(sql: """
+            CREATE TABLE sticky_notes (
+                id TEXT PRIMARY KEY NOT NULL,
+                documentID TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                pageIndex INTEGER NOT NULL,
+                rect TEXT,
+                title TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                color TEXT NOT NULL,
+                fontFamily TEXT NOT NULL DEFAULT '',
+                fontSize DOUBLE NOT NULL,
+                expanded BOOLEAN NOT NULL DEFAULT 0,
+                createdAt DATETIME NOT NULL,
+                updatedAt DATETIME NOT NULL
+            );
+            CREATE INDEX sticky_notes_page ON sticky_notes(documentID, pageIndex);
+
+            CREATE TABLE highlights (
+                id TEXT PRIMARY KEY NOT NULL,
+                documentID TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                pageIndex INTEGER NOT NULL,
+                color TEXT NOT NULL,
+                rects TEXT NOT NULL,
+                text TEXT NOT NULL DEFAULT '',
+                createdAt DATETIME NOT NULL
+            );
+            CREATE INDEX highlights_page ON highlights(documentID, pageIndex);
+            """)
+        }
+
+        migrator.registerMigration("v4-highlight-spans") { db in
+            try db.execute(sql: "ALTER TABLE highlights ADD COLUMN spans TEXT NOT NULL DEFAULT '[]'")
+        }
+
+        migrator.registerMigration("v5-note-order") { db in
+            try db.execute(sql: "ALTER TABLE sticky_notes ADD COLUMN sortOrder DOUBLE NOT NULL DEFAULT 0")
+            try db.execute(sql: "UPDATE sticky_notes SET sortOrder = CAST(strftime('%s', createdAt) AS DOUBLE)")
+        }
         return migrator
     }
 }

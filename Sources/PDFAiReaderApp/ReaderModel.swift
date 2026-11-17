@@ -6,12 +6,13 @@ import ReaderStore
 import ReaderServices
 
 enum SidebarTab: String, CaseIterable, Identifiable {
-    case thumbnails, outline, bookmarks, search
+    case thumbnails, outline, notes, bookmarks, search
     var id: String { rawValue }
     var label: String {
         switch self {
         case .thumbnails: return "縮圖"
         case .outline: return "目錄"
+        case .notes: return "筆記"
         case .bookmarks: return "書籤"
         case .search: return "搜尋"
         }
@@ -20,6 +21,7 @@ enum SidebarTab: String, CaseIterable, Identifiable {
         switch self {
         case .thumbnails: return "square.grid.2x2"
         case .outline: return "list.bullet.indent"
+        case .notes: return "note.text"
         case .bookmarks: return "bookmark"
         case .search: return "magnifyingglass"
         }
@@ -54,6 +56,7 @@ final class ReaderModel {
     let outline: [OutlineItem]
     let search: SearchModel
     let translation: TranslationCoordinator
+    let notes: NotesController
 
     private(set) var currentPageIndex: Int = 0
     private(set) var displayMode: DisplayMode
@@ -108,6 +111,7 @@ final class ReaderModel {
         self.outline = document.outlineRoot.map { OutlineItem.children(of: $0, in: document) } ?? []
         self.translation = translation
         self.overlay = TranslationOverlayManager(document: document, coordinator: translation)
+        self.notes = NotesController(document: document, documentID: record.id, database: database, url: url)
         UserDefaults.standard.register(defaults: ["showTranslationPanel": false, "pageTurnStyle": "curl",
                                                   "prerenderPages": true, "showTranslationOverlay": true])
         self.showTranslationPanel = UserDefaults.standard.bool(forKey: "showTranslationPanel")
@@ -118,6 +122,16 @@ final class ReaderModel {
         translation.onTranslationsChanged = { [weak self] page in
             self?.overlay.translationsChanged(page: page)
         }
+        notes.onChange = { [weak self] _ in self?.scheduleTurnImages() }
+        notes.overlayCovers = { [weak self] page in self?.overlay.covers(page: page) ?? false }
+        notes.overlayDrawings = { [weak self] page in self?.overlay.drawings(page: page) ?? [] }
+        notes.navigateToPage = { [weak self] page in self?.goTo(pageIndex: page) }
+        notes.pageBlocks = { [weak self] page in
+            guard let self else { return [] }
+            self.translation.loadCached(page)
+            return self.translation.blocks[page] ?? []
+        }
+        overlay.onDrawingsChanged = { [weak self] _ in self?.notes.scheduleRelayout() }
     }
 
     // MARK: - PDFView 連結
@@ -129,7 +143,7 @@ final class ReaderModel {
             guard let self, let view else { return nil }
             let index = self.document.index(for: page)
             return self.renderCache.image(page: page, index: index, longSide: self.renderLongSide(for: page, view: view),
-                                          overlays: self.overlayDrawings(index))
+                                          overlays: self.overlayDrawings(index), decorations: self.notes.decorations(page: index))
         }
         curl.isRTL = { [weak self] in self?.readingDirection == .rightToLeft }
         curl.isSpread = { [weak self] in self?.displayMode == .twoUp }
@@ -138,6 +152,8 @@ final class ReaderModel {
             self.step(view, forward)
         }
         overlay.attach(to: view)
+        notes.attach(to: view)
+        view.registerForDraggedTypes(view.registeredDraggedTypes)
         applyDisplayMode(to: view)
 
         let progress = initialProgress
@@ -183,6 +199,7 @@ final class ReaderModel {
     func pdfViewSelectionChanged() {
         let has = !(pdfView?.currentSelection?.string?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         if has != hasSelection { hasSelection = has }
+        notes.pdfSelectionChanged(pdfView?.currentSelection)
     }
 
     private func syncFromView() {
@@ -204,6 +221,7 @@ final class ReaderModel {
             if self.visiblePageIndicesForSidebar != visible { self.visiblePageIndicesForSidebar = visible }
             self.translation.visibleChanged(visible, direction: self.directionTracker.direction)
             self.overlay.refresh(around: visible)
+            self.notes.visiblePagesChanged(visible)
             self.prepareTurnImages()
         }
     }
@@ -231,6 +249,7 @@ final class ReaderModel {
         UserDefaults.standard.set(on, forKey: "showTranslationOverlay")
         let visible = visiblePageIndices
         overlay.setEnabled(on, around: visible)
+        notes.relayout()
         if on {
             // 切到譯文時，目前頁面若還沒翻譯就立刻開始
             let missing = visible.filter { !translation.completedPages.contains($0) }
@@ -246,6 +265,7 @@ final class ReaderModel {
         guard showsTranslation, peeking != isPeekingOriginal else { return }
         isPeekingOriginal = peeking
         overlay.setPeeking(peeking)
+        notes.relayout()
     }
 
     // MARK: - 導覽
@@ -330,7 +350,8 @@ final class ReaderModel {
         let index = document.index(for: page)
         let longSide = renderLongSide(for: page, view: view)
         let drawings = overlayDrawings(index)
-        layer.contents = renderCache.image(page: page, index: index, longSide: longSide, overlays: drawings)
+        layer.contents = renderCache.image(page: page, index: index, longSide: longSide, overlays: drawings,
+                                           decorations: notes.decorations(page: index))
         layer.contentsGravity = .resize
         layer.shadowOpacity = 0.25
         layer.shadowRadius = 6
@@ -405,7 +426,19 @@ final class ReaderModel {
         for index in targets where index >= 0 && index < pageCount {
             guard let page = document.page(at: index) else { continue }
             renderCache.prepare(page: page, index: index, longSide: renderLongSide(for: page, view: view),
-                                overlays: overlayDrawings(index))
+                                overlays: overlayDrawings(index), decorations: notes.decorations(page: index))
+        }
+    }
+
+    @ObservationIgnored private var turnImagesTask: Task<Void, Never>?
+
+    /// 筆記或螢光筆改變後，稍等再重新準備翻頁影像（打字時不會一直重繪）。
+    private func scheduleTurnImages() {
+        turnImagesTask?.cancel()
+        turnImagesTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            self?.prepareTurnImages()
         }
     }
 
@@ -421,13 +454,18 @@ final class ReaderModel {
         return doc.bounds.width > clip.bounds.width + 4
     }
 
-    /// 鍵盤：C 切換原文／譯文；單頁／雙頁模式下 ← → ↑ ↓、空白鍵、Page Up/Down 一律左右翻書。
+    /// 鍵盤：C 切換原文／譯文；N 顯示／隱藏便利貼；單頁／雙頁模式下 ← → ↑ ↓、空白鍵、Page Up/Down 一律左右翻書。
     func handleKey(_ event: NSEvent) -> Bool {
         let mods = event.modifierFlags.intersection([.command, .option, .control])
         guard mods.isEmpty else { return false }
         // 以實體按鍵判斷（keyCode 8 = C），不論目前是注音、拼音或其他輸入法都有效
         if event.keyCode == 8 || event.charactersIgnoringModifiers?.lowercased() == "c" {
             toggleTranslation()
+            return true
+        }
+        // keyCode 45 = N（不受輸入法影響）
+        if event.keyCode == 45 || event.charactersIgnoringModifiers?.lowercased() == "n" {
+            notes.toggleVisible()
             return true
         }
         let rtl = readingDirection == .rightToLeft
@@ -621,9 +659,195 @@ final class ReaderModel {
     // MARK: - 選取翻譯
 
     func translateCurrentSelection() {
-        guard let text = pdfView?.currentSelection?.string, !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard let text = selectedText, !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         showTranslationPanel = true
         translation.translateSelection(text)
+    }
+
+    // MARK: - 筆記與螢光筆
+
+    /// 在目前頁面新增便利貼（工具列、選單）。
+    func addStickyNote() {
+        finishTurnAnimation()
+        curl.finishImmediately()
+        notes.addNote(page: currentPageIndex)
+    }
+
+    func addUnplacedNote() {
+        sidebarTab = .notes
+        notes.addUnplacedNote(page: currentPageIndex)
+    }
+
+    /// 工具列螢光筆按鈕：有選取就上色，否則切換螢光筆模式。
+    func highlighterPrimaryAction() {
+        if hasAnySelection, notes.highlightSelection() { return }
+        notes.highlighterMode.toggle()
+    }
+
+    func pdfMouseUp() {
+        guard notes.highlighterMode else { return }
+        notes.highlightSelection()
+    }
+
+    /// PDF 文字或掃描頁 OCR 文字有選取。
+    var hasAnySelection: Bool { hasSelection || notes.scanSelection != nil }
+
+    /// 目前選取的文字（PDF 文字層或掃描頁）。
+    var selectedText: String? {
+        if let t = pdfView?.currentSelection?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { return t }
+        return notes.scanSelection?.text
+    }
+
+    @ObservationIgnored private var scanDragging = false
+
+    /// 掃描頁（沒有文字層）上用 OCR 文字行選取文字；有文字層的頁面交給 PDFKit。
+    func scanMouse(_ event: NSEvent, _ phase: ReaderPDFView.ScanMousePhase) -> Bool {
+        guard let view = pdfView else { return false }
+        let point = view.convert(event.locationInWindow, from: nil)
+        switch phase {
+        case .down:
+            if event.modifierFlags.contains(.control) { return false }   // ⌃點按＝右鍵，保留選取
+            notes.clearScanSelection()
+            scanDragging = false
+            guard !event.modifierFlags.contains(.command),
+                  let page = view.page(for: point, nearest: false) else { return false }
+            let index = document.index(for: page)
+            let pagePoint = view.convert(point, to: page)
+            // 連結（例如目錄）照常可點
+            if let ann = page.annotation(at: pagePoint), ann.type == "Link" { return false }
+            let g = PageGeometry(cropBox: page.bounds(for: .cropBox), rotation: page.rotation)
+            let displayPoint = pagePoint.applying(g.pageToDisplay)
+            // 連點兩下／三下：選一個詞／一整段（譯文或掃描頁）
+            if event.clickCount >= 2 {
+                guard notes.selectUnit(page: index, displayPoint: displayPoint, paragraph: event.clickCount >= 3) else { return false }
+                view.clearSelection()
+                return true
+            }
+            // 譯文上的選取、掃描頁的選取由閱讀器處理；其他交給 PDFKit
+            guard notes.beginScanSelection(page: index, displayPoint: displayPoint) else { return false }
+            view.window?.makeFirstResponder(view)
+            view.clearSelection()
+            scanDragging = true
+            return true
+        case .dragged:
+            guard scanDragging, let p = scanDisplayPoint(event) else { return scanDragging }
+            notes.updateScanSelection(to: p)
+            view.autoscroll(with: event)
+            return true
+        case .up:
+            guard scanDragging else { return false }
+            scanDragging = false
+            if let p = scanDisplayPoint(event) { notes.updateScanSelection(to: p) }
+            notes.endScanSelection()
+            return true
+        }
+    }
+
+    /// 側邊欄的筆記拖到頁面上：放在放開的位置。
+    func dropNote(_ id: String, windowPoint: NSPoint) -> Bool {
+        guard let view = pdfView else { return false }
+        let point = view.convert(windowPoint, from: nil)
+        guard let page = view.page(for: point, nearest: true) else { return false }
+        finishTurnAnimation()
+        notes.placeNote(id, page: document.index(for: page), at: view.convert(point, to: page))
+        return true
+    }
+
+    /// 滑鼠位置的文字由閱讀器處理（譯文框內，或掃描頁），而不是 PDFKit。
+    func ownsTextInteraction(_ event: NSEvent) -> Bool {
+        guard let view = pdfView else { return false }
+        let point = view.convert(event.locationInWindow, from: nil)
+        guard let page = view.page(for: point, nearest: false) else { return false }
+        let index = document.index(for: page)
+        if notes.isScannedPage(index) { return true }
+        guard notes.currentSide(index) == .translated else { return false }
+        let g = PageGeometry(cropBox: page.bounds(for: .cropBox), rotation: page.rotation)
+        let p = view.convert(point, to: page).applying(g.pageToDisplay)
+        return notes.translatedBlockContains(index, p) || notes.textContains(page: index, displayPoint: p)
+    }
+
+    private func scanDisplayPoint(_ event: NSEvent) -> CGPoint? {
+        guard let view = pdfView, let page = notes.scanSelectionPage.flatMap({ document.page(at: $0) }) else { return nil }
+        let g = PageGeometry(cropBox: page.bounds(for: .cropBox), rotation: page.rotation)
+        let inView = view.convert(event.locationInWindow, from: nil)
+        return view.convert(inView, to: page).applying(g.pageToDisplay)
+    }
+
+    /// 掃描頁：滑鼠移到文字上顯示 I 形游標，並預先辨識該頁文字。
+    func pdfMouseMoved(_ event: NSEvent) {
+        guard let view = pdfView else { return }
+        let point = view.convert(event.locationInWindow, from: nil)
+        // 滑鼠在便利貼上：游標交給便利貼
+        var hit = view.window?.contentView?.hitTest(event.locationInWindow)
+        while let h = hit { if h is StickyNoteView { return }; hit = h.superview }
+        guard let page = view.page(for: point, nearest: false) else { return }
+        let index = document.index(for: page)
+        let translated = notes.currentSide(index) == .translated
+        guard translated || notes.isScannedPage(index) else { return }
+        if !translated { notes.loadScanLines(index) }
+        let pagePoint = view.convert(point, to: page)
+        if let ann = page.annotation(at: pagePoint), ann.type == "Link" { return }
+        let g = PageGeometry(cropBox: page.bounds(for: .cropBox), rotation: page.rotation)
+        if notes.textContains(page: index, displayPoint: pagePoint.applying(g.pageToDisplay)) {
+            NSCursor.iBeam.set()
+        } else if !translated {
+            NSCursor.arrow.set()
+        }
+    }
+
+    /// 頁面右鍵選單：新增便利貼、螢光筆上色／移除。
+    func contextMenuItems(for event: NSEvent) -> [NSMenuItem] {
+        guard let view = pdfView else { return [] }
+        let point = view.convert(event.locationInWindow, from: nil)
+        guard let page = view.page(for: point, nearest: false) else { return [] }
+        let index = document.index(for: page)
+        let pagePoint = view.convert(point, to: page)
+        var items: [NSMenuItem] = []
+
+        if let scan = notes.scanSelection, scan.side == .original {
+            let translate = ClosureMenuItem(title: L("翻譯選取文字", "Translate Selection")) { [weak self] in
+                self?.showTranslationPanel = true
+                self?.translation.translateSelection(scan.text)
+            }
+            translate.image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: nil)
+            items.append(translate)
+        }
+        if let scan = notes.scanSelection {
+            let copy = ClosureMenuItem(title: L("拷貝", "Copy")) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(scan.text, forType: .string)
+            }
+            items.append(copy)
+        }
+        if hasAnySelection {
+            for color in HighlightColor.allCases {
+                let item = ClosureMenuItem(title: L("螢光筆：", "Highlight: ") + color.localizedName) { [weak self] in
+                    self?.notes.highlightSelection(color)
+                }
+                item.image = color.swatchImage()
+                items.append(item)
+            }
+        } else if let h = notes.highlight(at: pagePoint, page: index) {
+            for color in HighlightColor.allCases where color != h.color {
+                let item = ClosureMenuItem(title: L("改為", "Change to ") + color.localizedName) { [weak self] in
+                    self?.notes.recolorHighlight(h.id, color)
+                }
+                item.image = color.swatchImage()
+                items.append(item)
+            }
+            let remove = ClosureMenuItem(title: L("移除螢光標記", "Remove Highlight")) { [weak self] in
+                self?.notes.removeHighlight(h.id)
+            }
+            remove.image = NSImage(systemSymbolName: "eraser", accessibilityDescription: nil)
+            items.append(remove)
+        }
+        let add = ClosureMenuItem(title: L("在此新增便利貼", "Add Sticky Note Here")) { [weak self] in
+            self?.finishTurnAnimation()
+            self?.notes.addNote(page: index, at: pagePoint)
+        }
+        add.image = NSImage(systemSymbolName: "note.text.badge.plus", accessibilityDescription: nil)
+        items.append(add)
+        return items
     }
 
     // MARK: - 定位與標示
@@ -690,6 +914,7 @@ final class ReaderModel {
         finishTurnAnimation()
         curl.finishImmediately()
         overlay.removeAll()
+        notes.detach()
         translation.shutdown()
     }
 }

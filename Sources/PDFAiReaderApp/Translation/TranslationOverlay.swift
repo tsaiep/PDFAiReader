@@ -61,6 +61,8 @@ final class TranslationOverlayManager {
     private var observers: [NSObjectProtocol] = []
     private weak var observedDocumentView: NSView?
     private var relayoutScheduled = false
+    /// 某頁的譯文排版更新（螢光筆要跟著重新定位）。
+    var onDrawingsChanged: ((Int) -> Void)?
 
     init(document: PDFDocument, coordinator: TranslationCoordinator) {
         self.document = document
@@ -147,10 +149,11 @@ final class TranslationOverlayManager {
             drawingsByPage[page] = []
             signatures[page] = signature
             relayout()
+            onDrawingsChanged?(page)
             return
         }
         building[page]?.cancel()
-        let items = entries.map { OverlayItem(bounds: $0.0.bounds, kind: $0.0.kind, text: $0.1) }
+        let items = entries.map { OverlayItem(bounds: $0.0.bounds, kind: $0.0.kind, text: $0.1, blockID: $0.0.id) }
         building[page] = Task { [weak self] in
             guard let self, let result = await self.coordinator.overlayStyles(page: page, items: items),
                   !Task.isCancelled else { return }
@@ -160,6 +163,7 @@ final class TranslationOverlayManager {
             self.signatures[page] = signature
             self.building.removeValue(forKey: page)
             self.relayout()
+            self.onDrawingsChanged?(page)
         }
     }
 
@@ -198,7 +202,12 @@ final class TranslationOverlayManager {
             }
             if overlayView.superview !== docView {
                 overlayView.removeFromSuperview()
-                docView.addSubview(overlayView, positioned: .above, relativeTo: nil)
+                // 譯文在頁面之上、便利貼之下
+                if let firstNote = docView.subviews.first(where: { $0 is StickyNoteView || $0 is PageMarksView }) {
+                    docView.addSubview(overlayView, positioned: .below, relativeTo: firstNote)
+                } else {
+                    docView.addSubview(overlayView, positioned: .above, relativeTo: nil)
+                }
             }
             let inView = view.convert(page.bounds(for: view.displayBox), from: page)
             let frame = docView.convert(inView, from: view).integral
@@ -215,6 +224,9 @@ final class TranslationOverlayManager {
 
     /// 目前某頁的疊加內容（給翻頁動畫的預先渲染使用）。
     func drawings(page: Int) -> [OverlayDrawing] { drawingsByPage[page] ?? [] }
+
+    /// 某頁在目前模式下是否被譯文蓋住（不論是否在畫面上；翻頁影像也用這個判斷）。
+    func covers(page: Int) -> Bool { isShowing && !(drawingsByPage[page] ?? []).isEmpty }
 
     /// 某頁目前是否正在畫面上顯示譯文。
     func isApplied(page: Int) -> Bool {

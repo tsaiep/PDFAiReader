@@ -5,6 +5,13 @@ import Vision
 import CoreGraphics
 import ReaderCore
 
+/// 文字層的一個字元。
+public struct LayoutChar: Sendable {
+    public var char: Character
+    public var rect: CGRect
+    public var source: Int
+}
+
 public struct ExtractedPage: Sendable {
     public var pageIndex: Int
     public var geometry: PageGeometry
@@ -70,6 +77,41 @@ public actor TextExtractor {
         return ExtractedPage(pageIndex: pageIndex, geometry: geometry, source: source, lines: lines,
                              meanConfidence: mean, blocks: result.blocks,
                              duration: Date().timeIntervalSince(start))
+    }
+
+    /// 掃描頁選取文字用的 OCR 文字行（顯示空間）。有可用文字層的頁面回傳 nil（交給 PDFKit 選取）。
+    public func scanLines(pageIndex: Int) throws -> [TextLine]? {
+        guard let page = document.page(at: pageIndex) else { throw TextExtractionError.pageOutOfRange(pageIndex) }
+        if Self.hasUsableTextLayer(page) { return nil }
+        let geometry = PageGeometry(cropBox: page.bounds(for: .cropBox), rotation: page.rotation)
+        return try ocrLines(page: page, geometry: geometry).map { line in
+            var l = line
+            l.bounds = PageRect(geometry.toDisplay(CGRect(x: line.bounds.x, y: line.bounds.y,
+                                                          width: line.bounds.width, height: line.bounds.height)))
+            return l
+        }
+    }
+
+    public static func pageHasTextLayer(_ page: PDFPage) -> Bool { hasUsableTextLayer(page) }
+
+    /// 文字層每個字元的位置（顯示空間）與在 `page.string` 中的索引；沒有可用文字層時回傳 nil。
+    /// 在本 actor 自己的文件實例上計算，不佔用主執行緒（逐字取位置一頁可能要數百毫秒）。
+    public func textLayerChars(pageIndex: Int) -> [LayoutChar]? {
+        guard let page = document.page(at: pageIndex), Self.hasUsableTextLayer(page),
+              let string = page.string as NSString?, string.length > 0 else { return nil }
+        let geometry = PageGeometry(cropBox: page.bounds(for: .cropBox), rotation: page.rotation)
+        var out: [LayoutChar] = []
+        out.reserveCapacity(string.length)
+        var i = 0
+        while i < string.length {
+            let r = string.rangeOfComposedCharacterSequence(at: i)
+            i = r.location + r.length
+            guard let c = string.substring(with: r).first, !c.isNewline else { continue }
+            // 以選取取得字元位置：索引與 page.string 一致（characterBounds 的索引在部分 PDF 會錯位）
+            guard let b = page.selection(for: r)?.bounds(for: page), b.width > 0, b.height > 0 else { continue }
+            out.append(LayoutChar(char: c, rect: geometry.toDisplay(b), source: r.location))
+        }
+        return out
     }
 
     // MARK: - 內嵌文字層

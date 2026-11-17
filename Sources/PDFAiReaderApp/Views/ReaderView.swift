@@ -71,9 +71,68 @@ struct ReaderToolbar: ToolbarContent {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
+            StickyNoteMenu(reader: reader, notes: reader.notes)
+            HighlighterMenu(reader: reader, notes: reader.notes)
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
             TranslationToggle(reader: reader)
             TranslationOptionsMenu(reader: reader, coordinator: reader.translation)
         }
+    }
+}
+
+/// 便利貼：按一下在目前頁面新增；選單可新增無位置筆記、顯示／隱藏。
+private struct StickyNoteMenu: View {
+    let reader: ReaderModel
+    @Bindable var notes: NotesController
+
+    var body: some View {
+        Menu {
+            Button(L("在頁面上新增便利貼", "Add Sticky Note on Page")) { reader.addStickyNote() }
+            Button(L("新增筆記（不放在頁面上）", "Add Note (Unplaced)")) { reader.addUnplacedNote() }
+            Divider()
+            Button(notes.isVisible ? L("隱藏頁面上的便利貼　（N）", "Hide Sticky Notes    (N)")
+                                   : L("顯示頁面上的便利貼　（N）", "Show Sticky Notes    (N)")) { notes.toggleVisible() }
+            Button(L("在側邊欄查看筆記", "Show Notes in Sidebar")) { reader.sidebarTab = .notes }
+        } label: {
+            Label(L("便利貼", "Sticky Note"), systemImage: notes.isVisible ? "note.text.badge.plus" : "note.text")
+        } primaryAction: {
+            reader.addStickyNote()
+        }
+        .help(L("新增便利貼（按 N 顯示／隱藏）", "Add a sticky note (press N to show/hide)"))
+    }
+}
+
+/// 螢光筆：有選取文字就直接上色；沒有則切換螢光筆模式（選取後放開即上色）。
+private struct HighlighterMenu: View {
+    let reader: ReaderModel
+    @Bindable var notes: NotesController
+
+    var body: some View {
+        Menu {
+            ForEach(HighlightColor.allCases) { c in
+                Button {
+                    notes.highlighterColor = c
+                    if reader.hasAnySelection { notes.highlightSelection(c) }
+                } label: {
+                    Label { Text((notes.highlighterColor == c ? "✓ " : "") + c.localizedName) }
+                        icon: { Image(nsImage: c.swatchImage()) }
+                }
+            }
+            Divider()
+            Toggle(L("螢光筆模式（選取後自動上色）", "Highlighter Mode (color on select)"), isOn: $notes.highlighterMode)
+        } label: {
+            Label { Text(L("螢光筆", "Highlighter")) } icon: {
+                Image(nsImage: notes.highlighterColor.toolbarImage(active: notes.highlighterMode))
+            }
+        } primaryAction: {
+            reader.highlighterPrimaryAction()
+        }
+        .help(notes.highlighterMode
+              ? L("螢光筆模式開啟中：選取文字即上色。按一下關閉", "Highlighter on: selecting text colors it. Click to turn off")
+              : L("螢光筆：選取文字後按一下上色；沒有選取時開啟螢光筆模式",
+                  "Highlighter: click to color the selection, or turn on highlighter mode"))
     }
 }
 
@@ -109,7 +168,7 @@ private struct TranslationOptionsMenu: View {
                 coordinator.reExtractFocusPages()
             }
             Button(L("翻譯選取文字", "Translate Selection")) { reader.translateCurrentSelection() }
-                .disabled(!reader.hasSelection)
+                .disabled(!reader.hasAnySelection)
             Toggle(L("閱讀時自動翻譯（目前頁＋\(coordinator.prefetchCount) 頁）",
                      "Translate While Reading (current + \(coordinator.prefetchCount) pages)"),
                    isOn: $coordinator.autoTranslate)

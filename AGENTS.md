@@ -13,7 +13,7 @@ macOS 原生 PDF 閱讀器，整合 Apple Vision OCR 與 Codex CLI 翻譯。
 | `ReaderStore` | SQLite（GRDB）schema、migration、存取 | ReaderCore、GRDB |
 | `TranslationCodex` | Codex CLI 實作：路徑偵測、程序生命週期、逾時、取消 | ReaderCore |
 | `ReaderServices` | 文字擷取（內嵌文字／Vision OCR）、譯文排版繪製、匯出翻譯 PDF | ReaderCore、PDFKit、Vision、CoreText |
-| `PDFAiReaderApp` | SwiftUI/AppKit/PDFKit UI、翻譯排程、頁面疊加、翻書動畫 | 以上全部 |
+| `PDFAiReaderApp` | SwiftUI/AppKit/PDFKit UI、翻譯排程、頁面疊加、翻書動畫、便利貼與螢光筆（Notes/） | 以上全部 |
 
 - UI 不得直接呼叫 `Process`；翻譯一律經 `TranslationEngine`。
 - `ReaderCore` 不得 import SwiftUI/AppKit/PDFKit/GRDB。

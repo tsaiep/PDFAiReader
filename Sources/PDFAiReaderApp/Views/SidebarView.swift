@@ -24,6 +24,8 @@ struct SidebarView: View {
                 ThumbnailListView(reader: reader, coordinator: coordinator)
             case .outline:
                 OutlineListView(reader: reader)
+            case .notes:
+                NotesListView(reader: reader, notes: reader.notes)
             case .bookmarks:
                 BookmarkListView(reader: reader)
             case .search:
@@ -38,6 +40,7 @@ extension SidebarTab {
         switch self {
         case .thumbnails: return L("縮圖", "Thumbnails")
         case .outline: return L("目錄", "Contents")
+        case .notes: return L("筆記", "Notes")
         case .bookmarks: return L("書籤", "Bookmarks")
         case .search: return L("搜尋", "Search")
         }

@@ -73,6 +73,38 @@ struct ReaderCommands: Commands {
                 .keyboardShortcut("f")
         }
 
+        CommandMenu(L("筆記", "Notes")) {
+            Button(L("新增便利貼", "Add Sticky Note")) { app.reader?.addStickyNote() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(app.reader == nil)
+            Button(L("新增筆記（不放在頁面上）", "Add Note (Unplaced)")) { app.reader?.addUnplacedNote() }
+                .keyboardShortcut("n", modifiers: [.command, .option, .shift])
+                .disabled(app.reader == nil)
+            Button(app.reader?.notes.isVisible == false ? L("顯示便利貼　　（N）", "Show Sticky Notes    (N)")
+                                                         : L("隱藏便利貼　　（N）", "Hide Sticky Notes    (N)")) {
+                app.reader?.notes.toggleVisible()
+            }
+            .disabled(app.reader == nil)
+            Divider()
+            ForEach(HighlightColor.allCases) { c in
+                Button(L("螢光筆標記選取文字：", "Highlight Selection: ") + c.localizedName) {
+                    app.reader?.notes.highlighterColor = c
+                    app.reader?.notes.highlightSelection(c)
+                }
+                .keyboardShortcut(KeyEquivalent(Character("\(HighlightColor.allCases.firstIndex(of: c)! + 1)")),
+                                  modifiers: [.command, .option])
+                .disabled(app.reader == nil)
+            }
+            Button((app.reader?.notes.highlighterMode == true ? "✓ " : "　") + L("螢光筆模式", "Highlighter Mode")) {
+                app.reader?.notes.highlighterMode.toggle()
+            }
+            .keyboardShortcut("h", modifiers: [.command, .option])
+            .disabled(app.reader == nil)
+            Divider()
+            Button(L("在側邊欄查看筆記", "Show Notes in Sidebar")) { app.reader?.sidebarTab = .notes }
+                .disabled(app.reader == nil)
+        }
+
         CommandMenu(L("翻譯", "Translate")) {
             Button(app.reader?.showsTranslation == true ? L("顯示原文　　（C）", "Show Original    (C)")
                                                         : L("顯示譯文　　（C）", "Show Translation    (C)")) {
