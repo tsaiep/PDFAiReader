@@ -116,7 +116,7 @@ final class NotesTests: XCTestCase {
         let expanded = try XCTUnwrap(notes.addNote(page: 0, at: CGPoint(x: 70, y: 170)))
         notes.update(expanded.id) {
             $0.title = "展開的筆記"
-            $0.body = String(repeating: "展開後往下長高，寬度不變。", count: 5)
+            $0.body = String(repeating: "展開後往下長高，寬度不變。", count: 8)
             $0.color = .sky
             $0.expanded = true
             $0.rect?.width = 230

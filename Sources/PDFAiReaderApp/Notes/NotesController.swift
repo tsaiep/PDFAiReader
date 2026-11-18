@@ -256,7 +256,8 @@ final class NotesController {
     private var lastFont: String { UserDefaults.standard.string(forKey: "note.lastFont") ?? "" }
     private var lastFontSize: Double {
         let v = UserDefaults.standard.double(forKey: "note.lastFontSize")
-        return v > 0 ? v : 13
+        // 上次用的大小若已不在選項中（例如舊版的 17），改用預設的「中」
+        return NoteFonts.sizes.contains { $0.value == v } ? v : 12
     }
 
     /// 修改一張筆記並儲存（debounce）。
@@ -611,7 +612,7 @@ struct NoteOptionsPanel: View {
                 .labelsHidden()
                 .frame(maxWidth: .infinity)
                 Picker(L("大小", "Size"), selection: Binding(
-                    get: { note?.fontSize ?? 13 },
+                    get: { note?.fontSize ?? 12 },
                     set: { v in controller.update(noteID) { $0.fontSize = v } })) {
                     ForEach(NoteFonts.sizes, id: \.value) { s in Text(L(s.zh, s.en)).tag(s.value) }
                 }

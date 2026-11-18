@@ -39,7 +39,7 @@ public struct StickyNote: Codable, Sendable, Identifiable, Equatable, Hashable {
 
     public init(id: String = UUID().uuidString, documentID: String, pageIndex: Int, rect: PageRect?,
                 title: String = "", body: String = "", color: NoteColor = .butter,
-                fontFamily: String = "", fontSize: Double = 13, expanded: Bool = false,
+                fontFamily: String = "", fontSize: Double = 12, expanded: Bool = false,
                 sortOrder: Double? = nil, createdAt: Date = Date(), updatedAt: Date = Date()) {
         self.id = id
         self.documentID = documentID

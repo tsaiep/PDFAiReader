@@ -138,7 +138,7 @@ enum NoteFonts {
         return all.filter { $0.family.isEmpty || families.contains($0.family) }
     }
 
-    static let sizes: [(value: Double, zh: String, en: String)] = [(12, "小", "S"), (14, "中", "M"), (17, "大", "L")]
+    static let sizes: [(value: Double, zh: String, en: String)] = [(10, "小", "S"), (12, "中", "M"), (14, "大", "L")]
 
     static func font(family: String, size: CGFloat, bold: Bool = false) -> NSFont {
         if !family.isEmpty {
