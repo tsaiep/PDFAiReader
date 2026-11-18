@@ -6,10 +6,13 @@ struct ReaderView: View {
     @Bindable var reader: ReaderModel
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
+    private var sidebarVisible: Bool { columnVisibility != .detailOnly }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(reader: reader, coordinator: reader.translation)
                 .navigationSplitViewColumnWidth(min: 170, ideal: 210, max: 360)
+                .toolbar(removing: .sidebarToggle)   // 用工具列左邊自己的側邊欄按鈕
         } detail: {
             HSplitView {
                 VStack(spacing: 0) {
@@ -26,7 +29,15 @@ struct ReaderView: View {
             }
         }
         .navigationTitle(reader.record.title)
-        .toolbar { ReaderToolbar(reader: reader) }
+        .toolbar {
+            ReaderToolbar(reader: reader, sidebarVisible: sidebarVisible) {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    columnVisibility = sidebarVisible ? .detailOnly : .all
+                }
+            }
+        }
+        .toolbar(removing: .sidebarToggle)
+        .toolbar(removing: .title)   // 工具列上不顯示書名（視窗標題仍是書名，視窗選單看得到）
         .sheet(item: $reader.activeSheet) { sheet in
             switch sheet {
             case .wholeTranslation:
@@ -43,115 +54,142 @@ struct ReaderView: View {
 
 // MARK: - Toolbar
 
+/// 上方工具列（系統標題列）：全螢幕時跟著選單列一起滑出／收回（系統原生行為）。
+/// 左：側邊欄、頁碼與書籤；中：單頁／雙頁／連續、縮放；右：便利貼、螢光筆、翻譯。
 struct ReaderToolbar: ToolbarContent {
     @Bindable var reader: ReaderModel
+    let sidebarVisible: Bool
+    let toggleSidebar: () -> Void
 
     var body: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Button { reader.previousPage() } label: { Label(L("上一頁", "Previous Page"), systemImage: "chevron.left") }
-                .help(L("上一頁 (←)", "Previous page (←)"))
-            PageField(reader: reader)
-            Button { reader.nextPage() } label: { Label(L("下一頁", "Next Page"), systemImage: "chevron.right") }
-                .help(L("下一頁 (→)", "Next page (→)"))
-        }
-
-        ToolbarItemGroup(placement: .primaryAction) {
-            DisplayModePicker(reader: reader)
-            if reader.displayMode == .twoUp {
-                SpreadAlignmentMenu(reader: reader)
+        ToolbarItem(placement: .navigation) {
+            HStack(spacing: 1) {
+                Button(action: toggleSidebar) { BarIcon(systemName: "sidebar.left") }
+                    .buttonStyle(BarButtonStyle())
+                    .help(sidebarVisible ? L("隱藏側邊欄", "Hide Sidebar") : L("顯示側邊欄", "Show Sidebar"))
+                BarDivider()
+                Button { reader.previousPage() } label: { BarIcon(systemName: "chevron.left") }
+                    .buttonStyle(BarButtonStyle())
+                    .help(L("上一頁 (←)", "Previous page (←)"))
+                PageField(reader: reader)
+                Button { reader.nextPage() } label: { BarIcon(systemName: "chevron.right") }
+                    .buttonStyle(BarButtonStyle())
+                    .help(L("下一頁 (→)", "Next page (→)"))
+                BookmarkButton(reader: reader)
             }
+        }
 
-            ControlGroup {
-                Button { reader.zoomOut() } label: { Label(L("縮小", "Zoom Out"), systemImage: "minus.magnifyingglass") }
-                Button { reader.zoomIn() } label: { Label(L("放大", "Zoom In"), systemImage: "plus.magnifyingglass") }
+        ToolbarItem(placement: .principal) {
+            HStack(spacing: 1) {
+                DisplayModeButtons(reader: reader)
+                BarDivider()
+                ZoomMenu(reader: reader)
             }
-
-            ZoomMenu(reader: reader)
-            BookmarkButton(reader: reader)
         }
 
-        ToolbarItemGroup(placement: .primaryAction) {
-            StickyNoteMenu(reader: reader, notes: reader.notes)
-            HighlighterMenu(reader: reader, notes: reader.notes)
-        }
-
-        ToolbarItemGroup(placement: .primaryAction) {
-            TranslationToggle(reader: reader)
-            TranslationOptionsMenu(reader: reader, coordinator: reader.translation)
+        ToolbarItem(placement: .primaryAction) {
+            HStack(spacing: 1) {
+                StickyNoteControl(reader: reader, notes: reader.notes)
+                HighlighterControl(reader: reader, notes: reader.notes)
+                BarDivider()
+                TranslationControl(reader: reader, coordinator: reader.translation)
+            }
         }
     }
 }
 
-/// 便利貼：按一下在目前頁面新增；選單可新增無位置筆記、顯示／隱藏。
-private struct StickyNoteMenu: View {
+/// 便利貼：按一下在目前頁面新增；旁邊的箭頭打開選單（無位置筆記、顯示／隱藏）。
+private struct StickyNoteControl: View {
     let reader: ReaderModel
     @Bindable var notes: NotesController
 
     var body: some View {
-        Menu {
-            Button(L("在頁面上新增便利貼", "Add Sticky Note on Page")) { reader.addStickyNote() }
-            Button(L("新增筆記（不放在頁面上）", "Add Note (Unplaced)")) { reader.addUnplacedNote() }
-            Divider()
-            Button(notes.isVisible ? L("隱藏頁面上的便利貼　（N）", "Hide Sticky Notes    (N)")
-                                   : L("顯示頁面上的便利貼　（N）", "Show Sticky Notes    (N)")) { notes.toggleVisible() }
-            Button(L("在側邊欄查看筆記", "Show Notes in Sidebar")) { reader.sidebarTab = .notes }
-        } label: {
-            Label(L("便利貼", "Sticky Note"), systemImage: notes.isVisible ? "note.text.badge.plus" : "note.text")
-        } primaryAction: {
-            reader.addStickyNote()
+        HStack(spacing: 0) {
+            Button { reader.addStickyNote() } label: {
+                BarIcon(systemName: notes.isVisible ? "note.text.badge.plus" : "note.text")
+                    .opacity(notes.isVisible ? 1 : 0.55)
+            }
+            .buttonStyle(BarButtonStyle())
+            .help(L("新增便利貼（按 N 顯示／隱藏）", "Add a sticky note (press N to show/hide)"))
+
+            Menu {
+                Button(L("在頁面上新增便利貼", "Add Sticky Note on Page")) { reader.addStickyNote() }
+                Button(L("新增筆記（不放在頁面上）", "Add Note (Unplaced)")) { reader.addUnplacedNote() }
+                Divider()
+                Button(notes.isVisible ? L("隱藏頁面上的便利貼　（N）", "Hide Sticky Notes    (N)")
+                                       : L("顯示頁面上的便利貼　（N）", "Show Sticky Notes    (N)")) { notes.toggleVisible() }
+                Button(L("在側邊欄查看筆記", "Show Notes in Sidebar")) { reader.sidebarTab = .notes }
+            } label: { BarChevron() }
+            .barMenuStyle()
+            .help(L("便利貼選項", "Sticky note options"))
         }
-        .help(L("新增便利貼（按 N 顯示／隱藏）", "Add a sticky note (press N to show/hide)"))
     }
 }
 
-/// 螢光筆：有選取文字就直接上色；沒有則切換螢光筆模式（選取後放開即上色）。
-private struct HighlighterMenu: View {
+/// 螢光筆：有選取文字就直接上色；沒有則切換螢光筆模式（選取後放開即上色）。箭頭打開顏色選單。
+private struct HighlighterControl: View {
     let reader: ReaderModel
     @Bindable var notes: NotesController
 
     var body: some View {
-        Menu {
-            ForEach(HighlightColor.allCases) { c in
-                Button {
-                    notes.highlighterColor = c
-                    if reader.hasAnySelection { notes.highlightSelection(c) }
-                } label: {
-                    Label { Text((notes.highlighterColor == c ? "✓ " : "") + c.localizedName) }
-                        icon: { Image(nsImage: c.swatchImage()) }
-                }
-            }
-            Divider()
-            Toggle(L("螢光筆模式（選取後自動上色）", "Highlighter Mode (color on select)"), isOn: $notes.highlighterMode)
-        } label: {
-            Label { Text(L("螢光筆", "Highlighter")) } icon: {
+        HStack(spacing: 0) {
+            Button { reader.highlighterPrimaryAction() } label: {
                 Image(nsImage: notes.highlighterColor.toolbarImage(active: notes.highlighterMode))
+                    .frame(width: 20, height: 18)
             }
-        } primaryAction: {
-            reader.highlighterPrimaryAction()
+            .buttonStyle(BarButtonStyle(isOn: notes.highlighterMode))
+            .help(notes.highlighterMode
+                  ? L("螢光筆模式開啟中：選取文字即上色。按一下關閉", "Highlighter on: selecting text colors it. Click to turn off")
+                  : L("螢光筆：選取文字後按一下上色；沒有選取時開啟螢光筆模式",
+                      "Highlighter: click to color the selection, or turn on highlighter mode"))
+
+            Menu {
+                ForEach(HighlightColor.allCases) { c in
+                    Button {
+                        notes.highlighterColor = c
+                        if reader.hasAnySelection { notes.highlightSelection(c) }
+                    } label: {
+                        Label { Text((notes.highlighterColor == c ? "✓ " : "") + c.localizedName) }
+                            icon: { Image(nsImage: c.swatchImage()) }
+                    }
+                }
+                Divider()
+                Toggle(L("螢光筆模式（選取後自動上色）", "Highlighter Mode (color on select)"), isOn: $notes.highlighterMode)
+            } label: { BarChevron() }
+            .barMenuStyle()
+            .help(L("螢光筆顏色", "Highlighter color"))
         }
-        .help(notes.highlighterMode
-              ? L("螢光筆模式開啟中：選取文字即上色。按一下關閉", "Highlighter on: selecting text colors it. Click to turn off")
-              : L("螢光筆：選取文字後按一下上色；沒有選取時開啟螢光筆模式",
-                  "Highlighter: click to color the selection, or turn on highlighter mode"))
     }
 }
 
-/// 原文／譯文切換：按鈕呈按下狀態＝目前顯示譯文。
-private struct TranslationToggle: View {
+/// 原文／譯文切換＋翻譯選項。只換字與圖示、不加底色；翻譯進行中圖示換成小轉圈。
+private struct TranslationControl: View {
     let reader: ReaderModel
+    @Bindable var coordinator: TranslationCoordinator
 
     var body: some View {
-        Toggle(isOn: Binding(get: { reader.showsTranslation }, set: { reader.setShowsTranslation($0) })) {
-            Label(reader.showsTranslation ? L("譯文", "Translated") : L("原文", "Original"),
-                  systemImage: reader.showsTranslation ? "character.book.closed.fill" : "character.book.closed")
-                .labelStyle(.titleAndIcon)
+        HStack(spacing: 0) {
+            Button { reader.setShowsTranslation(!reader.showsTranslation) } label: {
+                HStack(spacing: 5) {
+                    if !coordinator.currentBatch.isEmpty {
+                        ProgressView().controlSize(.mini).frame(width: 18, height: 18)
+                    } else {
+                        BarIcon(systemName: reader.showsTranslation ? "character.book.closed.fill" : "character.book.closed")
+                    }
+                    Text(reader.showsTranslation ? L("譯文", "Translated") : L("原文", "Original"))
+                        .font(.system(size: 12.5, weight: .medium))
+                }
+                .padding(.trailing, 3)
+            }
+            .buttonStyle(BarButtonStyle())
+            .help(reader.showsTranslation
+                  ? L("目前顯示譯文。按一下或按 C 顯示原文；按住 ⌥ 可暫時查看原文",
+                      "Showing translation. Click or press C for the original; hold ⌥ to peek")
+                  : L("目前顯示原文。按一下或按 C 在頁面上顯示譯文",
+                      "Showing original. Click or press C to show the translation on the page"))
+
+            TranslationOptionsMenu(reader: reader, coordinator: coordinator)
         }
-        .toggleStyle(.button)
-        .help(reader.showsTranslation
-              ? L("目前顯示譯文。按一下或按 C 顯示原文；按住 ⌥ 可暫時查看原文",
-                  "Showing translation. Click or press C for the original; hold ⌥ to peek")
-              : L("目前顯示原文。按一下或按 C 在頁面上顯示譯文",
-                  "Showing original. Click or press C to show the translation on the page"))
     }
 }
 
@@ -184,9 +222,8 @@ private struct TranslationOptionsMenu: View {
                                                : L("顯示翻譯側欄", "Show Translation Sidebar")) {
                 reader.showTranslationPanel.toggle()
             }
-        } label: {
-            Label(L("翻譯選項", "Translation Options"), systemImage: "ellipsis.circle")
-        }
+        } label: { BarChevron() }
+        .barMenuStyle()
         .help(L("翻譯選項：目標語言、字體、模型、整份翻譯、匯出", "Translation options: language, font, model, whole document, export"))
     }
 }
@@ -228,50 +265,48 @@ struct FontMenu: View {
     }
 }
 
-/// 雙頁模式的對頁調整：對頁錯位時切換封面是否單獨顯示（整體位移一頁）。
-private struct SpreadAlignmentMenu: View {
+/// 雙頁模式的對頁調整：對頁錯位時切換封面是否單獨顯示（整體位移一頁）。收在縮放選單裡。
+private struct SpreadAlignmentItems: View {
     let reader: ReaderModel
 
     var body: some View {
-        Menu {
-            Picker(L("對頁方式", "Page Pairing"), selection: Binding(get: { reader.coverAlone },
-                                                                set: { reader.setCoverAlone($0) })) {
-                Text(L("封面單獨顯示（1｜2-3｜4-5…）", "Cover alone (1 | 2-3 | 4-5…)")).tag(true)
-                Text(L("從第一頁開始成對（1-2｜3-4…）", "Pair from first page (1-2 | 3-4…)")).tag(false)
-            }
-            .pickerStyle(.inline)
-            Divider()
-            Picker(L("閱讀方向", "Reading Direction"), selection: Binding(get: { reader.readingDirection },
-                                                                    set: { reader.setReadingDirection($0) })) {
-                Text(L("左至右", "Left to Right")).tag(ReadingDirection.leftToRight)
-                Text(L("右至左（直排書）", "Right to Left")).tag(ReadingDirection.rightToLeft)
-            }
-            .pickerStyle(.inline)
-        } label: {
-            Label(L("對頁調整", "Spread Alignment"), systemImage: "book.pages")
+        Picker(L("對頁方式", "Page Pairing"), selection: Binding(get: { reader.coverAlone },
+                                                            set: { reader.setCoverAlone($0) })) {
+            Text(L("封面單獨顯示（1｜2-3｜4-5…）", "Cover alone (1 | 2-3 | 4-5…)")).tag(true)
+            Text(L("從第一頁開始成對（1-2｜3-4…）", "Pair from first page (1-2 | 3-4…)")).tag(false)
         }
-        .help(L("對頁沒對上時，切換封面是否單獨顯示即可整體位移一頁", "If facing pages are misaligned, toggle the cover setting to shift pairing by one page"))
+        .pickerStyle(.inline)
+        Picker(L("閱讀方向", "Reading Direction"), selection: Binding(get: { reader.readingDirection },
+                                                                set: { reader.setReadingDirection($0) })) {
+            Text(L("左至右", "Left to Right")).tag(ReadingDirection.leftToRight)
+            Text(L("右至左（直排書）", "Right to Left")).tag(ReadingDirection.rightToLeft)
+        }
+        .pickerStyle(.inline)
     }
 }
 
-/// 各工具列元件獨立成 View，翻頁時只會重繪真正依賴頁碼的部分。
-private struct DisplayModePicker: View {
+/// 單頁／雙頁／連續：三顆圖示按鈕，目前模式以強調色標示。
+private struct DisplayModeButtons: View {
     let reader: ReaderModel
+
     var body: some View {
-        Picker(L("顯示模式", "Display Mode"), selection: Binding(get: { reader.displayMode }, set: { reader.setDisplayMode($0) })) {
-            Label(L("單頁", "Single Page"), systemImage: "doc").tag(DisplayMode.singlePage)
-            Label(L("雙頁", "Two Pages"), systemImage: "book").tag(DisplayMode.twoUp)
-            Label(L("連續", "Continuous"), systemImage: "scroll").tag(DisplayMode.continuous)
+        ForEach([(DisplayMode.singlePage, "doc", "⌘1"), (.twoUp, "book", "⌘2"), (.continuous, "scroll", "⌘3")],
+                id: \.0) { mode, icon, key in
+            Button { reader.setDisplayMode(mode) } label: { BarIcon(systemName: icon) }
+                .buttonStyle(BarButtonStyle(isOn: reader.displayMode == mode))
+                .help(mode.localizedLabel + "（\(key)）")
         }
-        .pickerStyle(.segmented)
-        .help(L("顯示模式：單頁 ⌘1／雙頁 ⌘2／連續 ⌘3", "Display mode: single ⌘1 / two pages ⌘2 / continuous ⌘3"))
     }
 }
 
+/// 縮放百分比；選單內含放大縮小、符合頁寬／視窗，雙頁模式另有對頁調整。
 private struct ZoomMenu: View {
     let reader: ReaderModel
     var body: some View {
         Menu {
+            Button(L("放大　　⌘+", "Zoom In    ⌘+")) { reader.zoomIn() }
+            Button(L("縮小　　⌘−", "Zoom Out    ⌘−")) { reader.zoomOut() }
+            Divider()
             Button(L("符合頁寬", "Fit Width")) { reader.fitWidth() }
             Button(L("符合視窗", "Fit Window")) { reader.fitWindow() }
             Button(L("實際大小", "Actual Size")) { reader.actualSize() }
@@ -279,12 +314,19 @@ private struct ZoomMenu: View {
             ForEach([50, 75, 100, 125, 150, 200, 300], id: \.self) { p in
                 Button("\(p)%") { reader.setScale(percent: Double(p)) }
             }
+            if reader.displayMode == .twoUp {
+                Divider()
+                SpreadAlignmentItems(reader: reader)
+            }
         } label: {
             Text("\(Int((reader.scaleFactor * 100).rounded()))%")
+                .font(.system(size: 12, weight: .medium))
                 .monospacedDigit()
-                .frame(minWidth: 44)
+                .frame(minWidth: 38)
+                .modifier(BarMenuLabel(horizontalPadding: 4))
         }
-        .help(L("縮放", "Zoom"))
+        .barMenuStyle()
+        .help(reader.displayMode == .twoUp ? L("縮放與對頁調整", "Zoom & page pairing") : L("縮放", "Zoom"))
     }
 }
 
@@ -292,8 +334,9 @@ private struct BookmarkButton: View {
     let reader: ReaderModel
     var body: some View {
         Button { reader.toggleBookmark() } label: {
-            Label(L("書籤", "Bookmark"), systemImage: reader.isCurrentPageBookmarked ? "bookmark.fill" : "bookmark")
+            BarIcon(systemName: reader.isCurrentPageBookmarked ? "bookmark.fill" : "bookmark")
         }
+        .buttonStyle(BarButtonStyle())
         .help(L("加入／移除書籤 (⌘D)", "Add or remove bookmark (⌘D)"))
     }
 }
@@ -304,27 +347,39 @@ private struct PageField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
+        let digits = max(2, String(reader.pageCount).count)
         HStack(spacing: 4) {
             TextField(L("頁", "Page"), text: $text)
-                .frame(width: 48)
-                .multilineTextAlignment(.trailing)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.center)
+                .font(.system(size: 12.5, weight: .semibold).monospacedDigit())
+                .frame(width: CGFloat(digits) * 8 + 8, height: 20)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(focused ? 0.12 : 0.06)))
                 .focused($focused)
                 .onSubmit {
                     if let n = Int(text.trimmingCharacters(in: .whitespaces)) {
                         reader.goTo(pageIndex: n - 1)
                     }
-                    focused = false
-                    text = "\(reader.currentPageIndex + 1)"
+                    finishEditing()
                 }
+                .onExitCommand { finishEditing() }
             Text("/ \(reader.pageCount)")
+                .font(.system(size: 12.5).monospacedDigit())
                 .foregroundStyle(.secondary)
-                .monospacedDigit()
         }
+        .padding(.horizontal, 4)
         .onAppear { text = "\(reader.currentPageIndex + 1)" }
         .onChange(of: reader.currentPageIndex) { _, new in
             if !focused { text = "\(new + 1)" }
         }
+    }
+
+    /// 輸入完把焦點還給 PDF，方向鍵翻頁才會繼續有效。
+    private func finishEditing() {
+        focused = false
+        text = "\(reader.currentPageIndex + 1)"
+        if let view = reader.pdfView { view.window?.makeFirstResponder(view) }
     }
 }
 

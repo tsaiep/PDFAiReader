@@ -7,7 +7,7 @@ macOS 原生 PDF 閱讀器，整合 Apple Vision OCR 與 Codex CLI 翻譯。
 - 開發代理人須知：[AGENTS.md](AGENTS.md)
 
 ## 需求
-- macOS 14 以上、Apple Silicon 或 Intel
+- macOS 15 以上、Apple Silicon 或 Intel
 - Xcode 16 以上（或 Command Line Tools 中的 Swift 6）
 - 翻譯功能：Codex CLI（`brew install codex` 或 `npm install -g @openai/codex`），並執行 `codex login`
 

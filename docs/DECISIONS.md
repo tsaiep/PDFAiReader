@@ -56,7 +56,7 @@ OCR → 版面分析 → 翻譯 為同一條有依賴關係的管線，OCR 也�
 ## D12. 技術選型
 - SQLite：GRDB.swift 7
 - 專案格式：Swift Package（Xcode 可直接開啟 Package.swift）；`scripts/build_app.sh` 打包成 .app。日後需要簽章／Info.plist 細節時再改用 XcodeGen 產生 .xcodeproj
-- 最低系統：macOS 14
+- 最低系統：macOS 14（v0.6 起改為 macOS 15，見下方）
 - 大型文件效能列入 Phase 1 驗收
 
 ## Phase 0 結果（2026-11-15）
@@ -144,3 +144,20 @@ OCR → 版面分析 → 翻譯 為同一條有依賴關係的管線，OCR 也�
   上一句已結束、下一行明顯右縮（> 1.2 行高）→ 首行縮排的新段落。
   舊資料：載入時若段落中間夾著項目符號（`needsRelayout`），自動以新規則重新分析；已翻譯的頁面接著只重翻有變動的段落。
   螢光筆錨點的區塊編號因此改變時，以標記的文字在同一種文字裡重新定位（`resolved`）。
+
+## v0.6 決策（2026-11-18）上方工具列重新設計
+- **最低系統改為 macOS 15**（Package.swift、Info.plist、README）：需要 `windowToolbarFullScreenVisibility(.onHover)`
+  與 `toolbar(removing: .title)`。SceneBuilder 不支援 `if #available`，無法同時相容 14。
+- **工具列放在系統標題列**（原生 NSToolbar，由 SwiftUI `.toolbar` 產生），不顯示書名（`toolbar(removing: .title)`；
+  視窗標題仍是書名，視窗選單看得到）。系統的側邊欄按鈕移除（`toolbar(removing: .sidebarToggle)` 要放在側邊欄那一欄上才有效），
+  改用工具列最左邊自己的按鈕。
+- **全螢幕**：`windowToolbarFullScreenVisibility(.onHover)`——工具列跟選單列一起自動隱藏，滑鼠推到螢幕頂端才一起滑下來，
+  平時頁面滿版。這個設定在「進入全螢幕的當下」決定，所以放在整個視窗（`ContentView`，含書庫）上，
+  先全螢幕再開書也有效。（`NSApp.presentationOptions` 加 `.autoHideToolbar` 在 SwiftUI 視窗無效；
+  SwiftUI 管著視窗代理，也不宜自己接 `willUseFullScreenPresentationOptions`。）
+- **視窗模式**：工具列一直顯示（系統標題列無法單獨滑出／收回）。
+- **分組**：左＝側邊欄、‹ 頁碼 / 總頁數 ›、書籤（`.navigation`）；中＝單頁／雙頁／連續、縮放％（`.principal`；
+  雙頁的對頁調整收進縮放選單）；右＝便利貼、螢光筆、原文／譯文（`.primaryAction`；皆為「按鈕＋小箭頭選單」）。
+- **外觀**（`Views/ReaderChrome.swift`）：按鈕平時無底色、滑過淡淡一層；選取中只用中性灰底（不用強調色）；
+  原文／譯文只換字與圖示。
+- 過程中試過「浮動膠囊＋自己偵測滑鼠滑出」的做法，與系統選單列／標題列的觸發互相干擾，最後改回原生工具列。

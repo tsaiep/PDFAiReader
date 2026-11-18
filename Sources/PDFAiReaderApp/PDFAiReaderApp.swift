@@ -30,6 +30,9 @@ struct PDFAiReaderApp: App {
             ContentView()
                 .environment(app)
                 .frame(minWidth: 900, minHeight: 600)
+                // 全螢幕時工具列跟選單列一起自動隱藏，滑鼠推到螢幕頂端才一起滑下來，平時頁面滿版。
+                // 要放在整個視窗（含書庫）：這個設定在「進入全螢幕的當下」生效，先全螢幕再開書也要有效。
+                .windowToolbarFullScreenVisibility(.onHover)
         }
         .commands { ReaderCommands(app: app) }
 

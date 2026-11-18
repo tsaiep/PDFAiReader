@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "PDFAiReader",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
     products: [
         .executable(name: "PDFAiReader", targets: ["PDFAiReaderApp"]),
         .library(name: "ReaderCore", targets: ["ReaderCore"]),
