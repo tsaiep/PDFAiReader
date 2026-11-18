@@ -1,89 +1,93 @@
 # AI PDF Reader
 
-macOS 原生 PDF 閱讀器，整合 Apple Vision OCR 與 Codex CLI 翻譯。
+macOS 原生 PDF 閱讀器，能把 PDF 內容直接翻譯並疊在原頁面上，保留原本排版。
 
-- 規格：[docs/PLAN.md](docs/PLAN.md)
-- 修訂決策（優先）：[docs/DECISIONS.md](docs/DECISIONS.md)
-- 開發代理人須知：[AGENTS.md](AGENTS.md)
+- **翻譯**：譯文疊在頁面上，按 **C** 切換原文／譯文；可整份翻譯、匯出翻譯版 PDF
+- **掃描檔也能用**：沒有文字層的頁面會用 Apple Vision 在本機 OCR
+- **目標語言**：繁中（台灣）、简中、English、日本語、한국어、Français、Deutsch、Español；簡繁互轉在本機完成，不耗 AI 額度
+- **閱讀**：單頁／雙頁書本模式／連續捲動，翻書動畫、觸控板手勢
+- **筆記**：便利貼、螢光筆（譯文和原文上的標記會互相對應）
 
-## 需求
-- macOS 15 以上、Apple Silicon 或 Intel
-- Xcode 16 以上（或 Command Line Tools 中的 Swift 6）
-- 翻譯功能：Codex CLI（`brew install codex` 或 `npm install -g @openai/codex`），並執行 `codex login`
+## 系統需求
 
-## 執行
+| 項目 | 需求 |
+|---|---|
+| 系統 | macOS 15 (Sequoia) 以上，Apple Silicon 或 Intel 皆可 |
+| 編譯工具 | Xcode 16 以上（從 App Store 安裝） |
+| 翻譯功能 | Codex CLI，並登入 ChatGPT 帳號（只看 PDF 不需要） |
+
+## 安裝
+
+### 1. 安裝 Xcode
+
+從 App Store 安裝 Xcode，安裝完先打開一次，同意授權條款。
+
+### 2. 下載並安裝
+
+打開「終端機」，貼上：
+
 ```bash
-swift run PDFAiReader            # 開發時直接執行
-./scripts/build_app.sh           # 打包成 build/PDFAiReader.app
-open build/PDFAiReader.app
-open Package.swift               # 用 Xcode 開啟並編輯
-swift test                       # 單元測試
+git clone https://github.com/tsaiep/PDFAiReader.git
+cd PDFAiReader
+./scripts/install.sh
 ```
 
-## 進度
-| 階段 | 狀態 |
-|---|---|
-| Phase 0：Codex CLI 可行性測試 | 腳本完成：`scripts/phase0_codex_probe.sh` |
-| Phase 1：PDF 閱讀器 | 開發中 |
-| Phase 2：OCR 與文字結構 | 未開始 |
-| Phase 3：Codex 翻譯 | 引擎介面與 Codex Adapter 已完成，UI 未開始 |
-| Phase 4：預翻譯與整書任務 | 預翻譯規劃器已完成，排程器未開始 |
+腳本會編譯 app、安裝到你的「應用程式」資料夾（`~/Applications`），然後自動打開。第一次編譯要下載相依套件，大約 1–3 分鐘。
 
-## Phase 1 已完成功能
-- 開啟 PDF：選單、拖放、最近開啟、Finder「打開方式」（.app 版本）
-- 單頁／雙頁（書本模式）／連續捲動，左至右／右至左
-- 放大縮小、符合頁寬、符合視窗、實際大小、指定比例
-- 頁碼輸入、上下頁、首頁末頁
-- 側邊欄：縮圖、目錄（PDF 大綱）、書籤、搜尋（內嵌文字）
-- 自動保存閱讀進度（頁碼、縮放、顯示模式）
-- 檔案搬移／重新命名後仍可找回（快速指紋＋macOS bookmark）
+之後在 Launchpad 或 Spotlight 搜尋「AI PDF Reader」就能開啟。想用它當預設 PDF 閱讀器：在 Finder 對任一 PDF 按右鍵 →「取得資訊」→「打開檔案的應用程式」選 AI PDF Reader →「全部更改」。
 
-## v0.5 筆記與螢光筆
-- **便利貼**：工具列便利貼按鈕（或 ⌥⌘N、頁面右鍵「在此新增便利貼」）新增在目前頁面，立即可輸入
-  - 按住頂端拖曳移動；點內文直接編輯，游標落在點擊處；拖左、右、下緣調整大小（會限制在頁面內）
-  - 內容超出時底部出現「展開」，往下展開、寬度不變；再按「收合」
-  - 6 種顏色（奶油黃、蜜桃、薄荷、天藍、薰衣草、石墨；石墨為深色、白字），字體與大小可選，有標題才顯示標題列
-  - 在便利貼上按右鍵（或雙擊頂端）開啟選項：標題、顏色、字體、大小、移到側邊欄、刪除
-  - 單鍵 **N** 顯示／隱藏頁面上的便利貼（不受輸入法影響）
-- **側邊欄「筆記」**：本頁／全部；按一下跳到頁面上的便利貼，按兩下直接在卡片裡編輯（頁面上的便利貼也可以），右鍵開選項；
-  拖曳卡片調整順序，把只在側邊欄的筆記拖到頁面上就會放在放開的位置
-- **螢光筆**：選取文字 → 右鍵選螢光黃／紅／藍，或按工具列螢光筆（⌥⌘1–3）；
-  沒有選取時按工具列螢光筆＝螢光筆模式（⌥⌘H），選取後放開即上色。右鍵標記可改色或移除
-  - 掃描頁（沒有文字層）也能選字：以 OCR 文字行選取，可上螢光筆、翻譯、拷貝（第一次在該頁選取時辨識約 1 秒）
-  - 顯示譯文時可直接在譯文上選字、上螢光筆；標記跟著文字走：在譯文上標的，切回原文會標在對應的原文句子上，反之亦然
-- **⌘Z／⇧⌘Z**：復原／重做新增、移動、縮放、刪除、改顏色字體標題的便利貼，以及新增、改色、移除螢光筆（便利貼編輯中 ⌘Z 只復原文字）
-- 便利貼與螢光筆存在本機資料庫，不修改 PDF 檔；翻頁動畫也會畫出來
+### 3. 設定翻譯功能
 
-## v0.4 更新
-- 翻頁：單頁／雙頁模式下 ← → ↑ ↓、空白鍵、Page Up/Down、觸控板雙指上下左右滑動，一律左右翻書；
-  翻書效果為柔軟的頁面捲曲（Core Image），跟手即時，放開後完成或回彈。連續模式維持上下捲動
-- 工具列「原文／譯文」按鈕會顯示目前狀態；單鍵 **C** 切換（⌘Y 亦可，不受輸入法影響），按住 ⌥ 暫看原文
-- 目標語言可選：繁中（台灣）、简中、English、日本語、한국어、Français、Deutsch、Español
-- 簡↔繁在本機轉換字形，只替換明確的兩岸用語，不改句構、不消耗額度；已是目標語言的段落保留原文
-- 譯文字體可選（依目標語言列出已安裝字體）；畫面與匯出 PDF 共用
-- 介面語言：繁體中文／English（設定 → 一般）
-- 縮圖欄標記每頁翻譯狀態：✓ 已翻譯、轉圈 翻譯中、時鐘 排隊中、! 失敗
+翻譯透過 [Codex CLI](https://github.com/openai/codex) 呼叫 AI，使用的是**你自己的** ChatGPT 帳號額度。
 
-## 翻譯功能（v0.3）
-- 工具列中央「原文｜譯文」：譯文直接疊在 PDF 頁面上、保留排版（⌘Y 切換；按住 ⌥ 暫看原文）
-- 模型選單：翻譯側欄右上、工具列「翻譯」選單、設定 → 翻譯；可新增並測試自訂模型、選擇速度／品質
-- 翻頁動畫：翻書（預設）／滑動／無，設定 → 閱讀；觸控板左右滑動翻頁；連續模式 ← → 平滑捲動
+```bash
+brew install codex          # 有 Homebrew 的話
+# 或：npm install -g @openai/codex
 
-## 翻譯功能（v0.2）
-- 工具列「翻譯」按鈕：按一下開關翻譯面板，箭頭開啟選單
-- 翻譯面板：「翻譯此頁」、「自動翻譯＋N 頁」開關、譯文／對照切換；點段落會在頁面上標示位置
-- 選取文字 → 右鍵「翻譯選取文字」或 ⌘E
-- 整份翻譯（⇧⌘T）：可指定範圍、暫停／繼續／取消，重新開啟後可繼續
-- 匯出翻譯 PDF（⇧⌘E）：原位翻譯／原頁＋譯文頁對照／純譯文
-- 翻頁：單頁／雙頁模式支援 ← → 空白鍵翻頁與推移動畫，背景預先渲染前後頁
+codex login                 # 會開瀏覽器，登入 ChatGPT 帳號
+```
 
-## 端到端測試（會消耗 Codex 額度）
-`touch .dev/e2e-enabled && swift test --filter PipelineE2ETests`，報告與匯出檔在 `.dev/artifacts/`。
+登入後重新開啟 app 就能翻譯。app 會自動找 Codex 的位置；如果找不到，到「設定 → 翻譯」的「Codex 路徑」手動填入（在終端機執行 `which codex` 可查到路徑）。
 
-## 資料位置
-`~/Library/Application Support/PDFAiReader/reader.sqlite`
+## 更新到新版
+
+```bash
+cd PDFAiReader
+git pull
+./scripts/install.sh
+```
+
+閱讀進度、筆記和已翻譯的內容都會保留。
+
+## 常見問題
+
+**`./scripts/install.sh` 顯示 permission denied**
+執行 `chmod +x scripts/*.sh` 再試一次。
+
+**編譯錯誤：`xcrun: error: unable to find utility` 或找不到 SDK**
+執行 `sudo xcode-select -s /Applications/Xcode.app`，讓系統使用完整的 Xcode。
+
+**翻譯一直失敗**
+先在終端機執行 `codex login status` 確認已登入，並確認帳號還有額度。
+
+**資料存在哪裡？**
+`~/Library/Application Support/PDFAiReader/`。便利貼與螢光筆存在這裡，不會修改原本的 PDF 檔。要完全移除 app，刪掉 `~/Applications/PDFAiReader.app` 和這個資料夾即可。
 
 ## 已知限制
-- 掃描頁的字元位置以 OCR 行的平均字寬估計；原文與譯文的對應以句子對齊，句數不同時按比例換算（英文會擴到完整單字）
-- 匯出的翻譯 PDF 不含便利貼與螢光筆
+
 - 有密碼的 PDF 尚不支援
+- 匯出的翻譯 PDF 不含便利貼與螢光筆
+- 掃描頁的選字位置是依 OCR 結果估計，可能略有偏移
+
+## 開發
+
+```bash
+swift run PDFAiReader        # 直接執行（開發用）
+./scripts/build_app.sh       # 只打包成 build/PDFAiReader.app，不安裝
+open Package.swift           # 用 Xcode 開啟
+swift test                   # 單元測試
+```
+
+- 規格：[docs/PLAN.md](docs/PLAN.md)；修訂決策（優先）：[docs/DECISIONS.md](docs/DECISIONS.md)
+- 更新紀錄：[docs/CHANGELOG.md](docs/CHANGELOG.md)
+- 開發代理人須知：[AGENTS.md](AGENTS.md)
