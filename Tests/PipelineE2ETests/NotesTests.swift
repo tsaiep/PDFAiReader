@@ -308,6 +308,23 @@ final class NotesTests: XCTestCase {
         let h = try XCTUnwrap(notes.highlights.first)
         XCTAssertEqual(h.spans.first?.side, .translated)
 
+        // 從譯文左側的頁邊開始拖曳：仍由閱讀器選取譯文，不交給 PDFKit 選到底下的原文
+        let blockRect = OverlayRenderer.displayRect(block.bounds, geometry: g)
+        let firstRect = tb.rects[0]
+        XCTAssertTrue(notes.beginScanSelection(page: 0, displayPoint: CGPoint(x: blockRect.minX - 25, y: firstRect.midY)))
+        notes.updateScanSelection(to: CGPoint(x: tb.rects[1].maxX - 0.5, y: tb.rects[1].midY))
+        notes.endScanSelection()
+        XCTAssertEqual(notes.scanSelection?.text, String(tb.chars[0..<2]))
+        // 段落上方的空白處開始也一樣
+        XCTAssertTrue(notes.beginScanSelection(page: 0, displayPoint: CGPoint(x: firstRect.midX, y: blockRect.maxY + 5)))
+        notes.endScanSelection()
+        // 點在沒有譯文、仍顯示原文的字上：交給 PDFKit
+        let outside = try XCTUnwrap(doc.findString("Staged photography", withOptions: []).first { $0.pages.contains(page) })
+        let outsideRect = g.toDisplay(outside.bounds(for: page))
+        XCTAssertFalse(blockRect.intersects(outsideRect))
+        XCTAssertFalse(notes.beginScanSelection(page: 0, displayPoint: CGPoint(x: outsideRect.midX, y: outsideRect.midY)))
+        notes.clearScanSelection()
+
         // 譯文畫面：標在譯文的字上
         let onTranslation = notes.displayRects(for: h, page: 0)
         XCTAssertFalse(onTranslation.isEmpty)

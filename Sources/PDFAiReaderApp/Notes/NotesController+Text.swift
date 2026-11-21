@@ -305,9 +305,11 @@ extension NotesController {
     func beginScanSelection(page index: Int, displayPoint p: CGPoint) -> Bool {
         let side = currentSide(index)
         if side == .translated {
-            // 在譯文區塊範圍內（含行距、留白）都算點在譯文上；原文被蓋住，不能讓 PDFKit 選到
-            guard let tf = translatedFlow(index),
-                  tf.position(at: p, maxDistance: 6) != nil || translatedBlockContains(index, p) else { return false }
+            // 譯文蓋住原文的頁面，選取一律由閱讀器處理（包括從頁邊、段落間空白開始拖曳），
+            // 否則 PDFKit 會選到底下看不見的原文。只有點在「沒有譯文、仍顯示原文」的字上才交給 PDFKit。
+            guard let tf = translatedFlow(index) else { return false }
+            let onTranslation = tf.position(at: p, maxDistance: 6) != nil || translatedBlockContains(index, p)
+            if !onTranslation, isOnVisibleOriginalText(index, p) { return false }
         } else {
             guard isScannedPage(index) else { return false }
             loadScanLines(index)
@@ -317,6 +319,20 @@ extension NotesController {
         dragLastPoint = p
         dragEnded = false
         return true
+    }
+
+    /// 點是否落在沒被譯文蓋住的原文字上（顯示空間）。
+    func isOnVisibleOriginalText(_ index: Int, _ p: CGPoint) -> Bool {
+        guard !translatedBlockContains(index, p), let page = document?.page(at: index) else { return false }
+        let g = geometry(page)
+        let pagePoint = p.applying(g.displayToPage)
+        // 取點附近的詞，再確認點真的落在那個詞上（附近沒有字時也可能回傳最近的詞）
+        guard let word = page.selectionForWord(at: pagePoint),
+              !(word.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let box = word.bounds(for: page)
+        guard box.width > 0, box.height > 0 else { return false }
+        let d = g.toDisplay(box)
+        return d.insetBy(dx: -2, dy: -2).contains(p) && !translatedBlockContains(index, CGPoint(x: d.midX, y: d.midY))
     }
 
     /// 連點：選取一個詞（中日韓文字為一個句子內的短語，以標點分隔）或整段。
@@ -345,7 +361,7 @@ extension NotesController {
     func updateScanSelection(to p: CGPoint) {
         dragLastPoint = p
         guard let anchor = dragAnchor, let flow = flow(anchor.page, side: anchor.side),
-              let start = flow.position(at: anchor.point, maxDistance: 40),
+              let start = flow.position(at: anchor.point),
               let end = flow.position(at: p) else { return }
         let spans = flow.spans(from: start, to: end)
         let state = spans.isEmpty ? nil
@@ -381,7 +397,11 @@ extension NotesController {
                 for page in line.pages {
                     let r = line.bounds(for: page)
                     guard r.width > 0.5, r.height > 0.5 else { continue }
-                    map[document.index(for: page), default: []].append(geometry(page).toDisplay(r))
+                    let index = document.index(for: page)
+                    let d = geometry(page).toDisplay(r)
+                    // 被譯文蓋住的原文不畫反白（看起來像選到譯文以外的東西）
+                    if overlayCovers(index), translatedBlockContains(index, CGPoint(x: d.midX, y: d.midY)) { continue }
+                    map[index, default: []].append(d)
                 }
             }
         }
